@@ -206,6 +206,7 @@ impl<'a> Scanner<'a> {
             "let" => TokenKind::Let,
             "fn" => TokenKind::Fn,
             "return" => TokenKind::Return,
+            "continue" => TokenKind::Continue,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "for" => TokenKind::For,

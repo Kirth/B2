@@ -45,6 +45,7 @@ pub struct Executor {
     stack: Vec<Frame>,
     last_span: Span,
     output_sink: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    loop_depth: usize,
 }
 
 impl Executor {
@@ -56,6 +57,7 @@ impl Executor {
             stack: Vec::new(),
             last_span: Span { line: 1, col: 1 },
             output_sink: None,
+            loop_depth: 0,
         }
     }
 
@@ -67,6 +69,7 @@ impl Executor {
         self.filename = filename;
         self.source = source;
         self.last_span = Span { line: 1, col: 1 };
+        self.loop_depth = 0;
     }
 
     pub fn register_native<F>(&mut self, name: &str, func: F)
@@ -98,6 +101,7 @@ impl Executor {
             match self.exec_stmt(stmt)? {
                 ExecResult::Normal => {}
                 ExecResult::Return(_) => {}
+                ExecResult::Continue => return Err(self.err("'continue' used outside loop", stmt.span())),
             }
         }
         Ok(())
@@ -114,6 +118,7 @@ impl Executor {
                 _ => match self.exec_stmt(stmt)? {
                     ExecResult::Normal => {}
                     ExecResult::Return(_) => {}
+                    ExecResult::Continue => return Err(self.err("'continue' used outside loop", stmt.span())),
                 },
             }
         }
@@ -174,12 +179,16 @@ impl Executor {
             }
             Stmt::If { cond, then_branch, else_branch, .. } => {
                 let c = self.eval_expr(cond)?;
-                if c.is_truthy() {
-                    self.exec_block(then_branch)?;
+                let res = if c.is_truthy() {
+                    self.exec_block(then_branch)?
                 } else {
-                    self.exec_block(else_branch)?;
+                    self.exec_block(else_branch)?
+                };
+                match res {
+                    ExecResult::Normal => Ok(ExecResult::Normal),
+                    ExecResult::Return(v) => Ok(ExecResult::Return(v)),
+                    ExecResult::Continue => Ok(ExecResult::Continue),
                 }
-                Ok(ExecResult::Normal)
             }
             Stmt::For { pattern, iterable, body, span } => {
                 let it = self.eval_expr(iterable)?;
@@ -187,10 +196,15 @@ impl Executor {
                 for item in items {
                     self.push_scope();
                     self.bind_pattern(pattern, item, *span)?;
+                    self.loop_depth += 1;
                     let res = self.exec_block(body)?;
+                    self.loop_depth -= 1;
                     self.pop_scope();
                     if let ExecResult::Return(v) = res {
                         return Ok(ExecResult::Return(v));
+                    }
+                    if let ExecResult::Continue = res {
+                        continue;
                     }
                 }
                 Ok(ExecResult::Normal)
@@ -203,9 +217,14 @@ impl Executor {
                 loop {
                     let c = self.eval_expr(cond)?;
                     if !c.is_truthy() { break; }
+                    self.loop_depth += 1;
                     let res = self.exec_block(body)?;
+                    self.loop_depth -= 1;
                     if let ExecResult::Return(v) = res {
                         return Ok(ExecResult::Return(v));
+                    }
+                    if let ExecResult::Continue = res {
+                        continue;
                     }
                 }
                 Ok(ExecResult::Normal)
@@ -242,6 +261,12 @@ impl Executor {
                 };
                 Ok(ExecResult::Return(val))
             }
+            Stmt::Continue { span } => {
+                if self.loop_depth == 0 {
+                    return Err(self.err("'continue' used outside loop", *span));
+                }
+                Ok(ExecResult::Continue)
+            }
             Stmt::Invoke { name, expr, span } => {
                 let val = self.eval_expr(expr)?;
                 match name.as_str() {
@@ -263,7 +288,7 @@ impl Executor {
         self.push_scope();
         for stmt in stmts {
             let res = self.exec_stmt(stmt)?;
-            if let ExecResult::Return(_) = res {
+            if matches!(res, ExecResult::Return(_) | ExecResult::Continue) {
                 self.pop_scope();
                 return Ok(res);
             }
@@ -312,7 +337,7 @@ impl Executor {
                     if cancel_flag.load(Ordering::Relaxed) {
                         break;
                     }
-                    let mut exec = Executor { filename: filename.clone(), source: source.clone(), scopes: vec![captured_env.clone()], stack: Vec::new(), last_span: Span { line: 1, col: 1 }, output_sink: output_sink.clone() };
+                    let mut exec = Executor { filename: filename.clone(), source: source.clone(), scopes: vec![captured_env.clone()], stack: Vec::new(), last_span: Span { line: 1, col: 1 }, output_sink: output_sink.clone(), loop_depth: 0 };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
                         cancel_flag.store(true, Ordering::Relaxed);
@@ -458,6 +483,7 @@ impl Executor {
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
                         output_sink,
+                        loop_depth: 0,
                     };
                     exec.eval_block_expr(&body)
                 }))
@@ -480,6 +506,7 @@ impl Executor {
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
                         output_sink,
+                        loop_depth: 0,
                     };
                     exec.call_value(callee_value, arg_values)
                 }))
@@ -573,6 +600,10 @@ impl Executor {
                         self.pop_scope();
                         return Ok(v);
                     }
+                    if let ExecResult::Continue = res {
+                        self.pop_scope();
+                        return Ok(last);
+                    }
                 }
             }
         }
@@ -629,6 +660,7 @@ impl Executor {
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
                         output_sink: output_sink.clone(),
+                        loop_depth: 0,
                     };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
@@ -1196,6 +1228,7 @@ impl Executor {
 enum ExecResult {
     Normal,
     Return(Value),
+    Continue,
 }
 
 fn to_f64(v: Value) -> Result<f64, RuntimeError> {

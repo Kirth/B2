@@ -43,6 +43,7 @@ pub enum Stmt {
     TryCatch { try_block: Vec<Stmt>, err_name: String, catch_block: Vec<Stmt>, span: Span },
     Function { name: String, params: Vec<(String, Option<TypeExpr>)>, return_type: Option<TypeExpr>, body: Vec<Stmt>, span: Span },
     Return { value: Option<Expr>, span: Span },
+    Continue { span: Span },
     Invoke { name: String, expr: Expr, span: Span },
 }
 
@@ -91,6 +92,7 @@ impl Stmt {
             | Stmt::TryCatch { span, .. }
             | Stmt::Function { span, .. }
             | Stmt::Return { span, .. }
+            | Stmt::Continue { span, .. }
             | Stmt::Invoke { span, .. } => *span,
         }
     }

@@ -64,6 +64,13 @@ impl<'a> Parser<'a> {
             };
             return Ok(Stmt::Return { value: Some(value), span });
         }
+        if self.match_kind(&TokenKind::Continue) {
+            let span = self.prev_span();
+            if self.check(&TokenKind::Semicolon) {
+                self.advance();
+            }
+            return Ok(Stmt::Continue { span });
+        }
         if self.match_kind(&TokenKind::If) {
             return self.parse_if_stmt();
         }
