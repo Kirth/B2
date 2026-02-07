@@ -5,6 +5,8 @@ pub enum TokenKind {
     Fn,
     Return,
     Continue,
+    Break,
+    Throw,
     If,
     Else,
     For,
@@ -18,8 +20,11 @@ pub enum TokenKind {
     Parallel,
     Task,
     Await,
+    Match,
     Try,
     Catch,
+    Finally,
+    Defer,
 
     // Operators / punctuation
     LParen,
@@ -33,6 +38,7 @@ pub enum TokenKind {
     Semicolon,
     Dot,
     DotDot,
+    Ellipsis,
     Plus,
     Minus,
     Star,
@@ -50,6 +56,7 @@ pub enum TokenKind {
     AndAnd,
     OrOr,
     Arrow,
+    FatArrow,
     Pipe,
     Underscore,
 

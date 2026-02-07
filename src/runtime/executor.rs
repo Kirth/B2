@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use crate::parser::ast::{Expr, InterpPart, Pattern, Program, Span, Stmt};
+use crate::parser::ast::{CallArg, Expr, InterpPart, MatchArmKind, ParamSpec, Pattern, Program, Span, Stmt};
 use crate::runtime::errors::{Frame, RuntimeError};
 use crate::runtime::builtins::{numbers, strings};
 use crate::runtime::shell::{sh::run_sh, ssh::run_ssh};
@@ -11,11 +11,18 @@ use crate::runtime::value::Value;
 
 #[derive(Clone)]
 pub struct Function {
-    pub params: Vec<(String, Option<crate::parser::ast::TypeExpr>)>,
+    pub params: Vec<ParamSpec>,
     pub return_type: Option<crate::parser::ast::TypeExpr>,
     pub body: Vec<Stmt>,
     pub captured: HashMap<String, Value>,
     pub name: String,
+}
+
+#[derive(Clone)]
+pub enum RuntimeCallArg {
+    Positional(Value),
+    Spread(Value),
+    Named { name: String, value: Value },
 }
 
 #[derive(Clone)]
@@ -42,6 +49,7 @@ pub struct Executor {
     filename: String,
     source: String,
     scopes: Vec<HashMap<String, Value>>,
+    deferred_scopes: Vec<Vec<Vec<Stmt>>>,
     stack: Vec<Frame>,
     last_span: Span,
     output_sink: Option<Arc<dyn Fn(String) + Send + Sync>>,
@@ -54,6 +62,7 @@ impl Executor {
             filename,
             source,
             scopes: vec![HashMap::new()],
+            deferred_scopes: vec![Vec::new()],
             stack: Vec::new(),
             last_span: Span { line: 1, col: 1 },
             output_sink: None,
@@ -70,6 +79,7 @@ impl Executor {
         self.source = source;
         self.last_span = Span { line: 1, col: 1 };
         self.loop_depth = 0;
+        self.deferred_scopes = (0..self.scopes.len()).map(|_| Vec::new()).collect();
     }
 
     pub fn register_native<F>(&mut self, name: &str, func: F)
@@ -102,6 +112,10 @@ impl Executor {
                 ExecResult::Normal => {}
                 ExecResult::Return(_) => {}
                 ExecResult::Continue => return Err(self.err("'continue' used outside loop", stmt.span())),
+                ExecResult::Break => return Err(self.err("'break' used outside loop", stmt.span())),
+                ExecResult::Throw(v) => {
+                    return Err(self.err(&format!("Uncaught throw: {}", v.as_string()), stmt.span()))
+                }
             }
         }
         Ok(())
@@ -119,6 +133,10 @@ impl Executor {
                     ExecResult::Normal => {}
                     ExecResult::Return(_) => {}
                     ExecResult::Continue => return Err(self.err("'continue' used outside loop", stmt.span())),
+                    ExecResult::Break => return Err(self.err("'break' used outside loop", stmt.span())),
+                    ExecResult::Throw(v) => {
+                        return Err(self.err(&format!("Uncaught throw: {}", v.as_string()), stmt.span()))
+                    }
                 },
             }
         }
@@ -184,27 +202,33 @@ impl Executor {
                 } else {
                     self.exec_block(else_branch)?
                 };
-                match res {
-                    ExecResult::Normal => Ok(ExecResult::Normal),
-                    ExecResult::Return(v) => Ok(ExecResult::Return(v)),
-                    ExecResult::Continue => Ok(ExecResult::Continue),
-                }
+                Ok(res)
             }
             Stmt::For { pattern, iterable, body, span } => {
                 let it = self.eval_expr(iterable)?;
                 let items = self.iterate_value(it)?;
                 for item in items {
                     self.push_scope();
-                    self.bind_pattern(pattern, item, *span)?;
+                    let bind_res = self.bind_pattern(pattern, item, *span);
+                    if let Err(e) = bind_res {
+                        let pending = self.exit_scope(Err(e));
+                        return pending;
+                    }
                     self.loop_depth += 1;
-                    let res = self.exec_block(body)?;
+                    let body_res = self.exec_block(body);
                     self.loop_depth -= 1;
-                    self.pop_scope();
+                    let res = self.exit_scope(body_res)?;
                     if let ExecResult::Return(v) = res {
                         return Ok(ExecResult::Return(v));
                     }
                     if let ExecResult::Continue = res {
                         continue;
+                    }
+                    if let ExecResult::Break = res {
+                        break;
+                    }
+                    if let ExecResult::Throw(v) = res {
+                        return Ok(ExecResult::Throw(v));
                     }
                 }
                 Ok(ExecResult::Normal)
@@ -218,29 +242,58 @@ impl Executor {
                     let c = self.eval_expr(cond)?;
                     if !c.is_truthy() { break; }
                     self.loop_depth += 1;
-                    let res = self.exec_block(body)?;
+                    let body_res = self.exec_block(body);
                     self.loop_depth -= 1;
+                    let res = body_res?;
                     if let ExecResult::Return(v) = res {
                         return Ok(ExecResult::Return(v));
                     }
                     if let ExecResult::Continue = res {
                         continue;
                     }
+                    if let ExecResult::Break = res {
+                        break;
+                    }
+                    if let ExecResult::Throw(v) = res {
+                        return Ok(ExecResult::Throw(v));
+                    }
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::TryCatch { try_block, err_name, catch_block, .. } => {
-                match self.exec_block(try_block) {
-                    Ok(res) => Ok(res),
-                    Err(e) => {
-                        let err_value = self.error_to_value(&e);
-                        self.push_scope();
-                        self.define(err_name, err_value);
-                        let res = self.exec_block(catch_block);
-                        self.pop_scope();
-                        res
+            Stmt::Try { try_block, catch_name, catch_block, finally_block, .. } => {
+                let mut pending: Result<ExecResult, RuntimeError> = match self.exec_block(try_block) {
+                    Ok(ExecResult::Throw(v)) => {
+                        if let (Some(name), Some(block)) = (catch_name.as_ref(), catch_block.as_ref()) {
+                            self.push_scope();
+                            self.define(name, v);
+                            let catch_res = self.exec_block(block);
+                            self.exit_scope(catch_res)
+                        } else {
+                            Ok(ExecResult::Throw(v))
+                        }
                     }
+                    Ok(other) => Ok(other),
+                    Err(e) => {
+                        if let (Some(name), Some(block)) = (catch_name.as_ref(), catch_block.as_ref()) {
+                            let err_value = self.error_to_value(&e);
+                            self.push_scope();
+                            self.define(name, err_value);
+                            let catch_res = self.exec_block(block);
+                            self.exit_scope(catch_res)
+                        } else {
+                            Err(e)
+                        }
+                    }
+                };
+
+                if let Some(finally_block) = finally_block {
+                    pending = match self.exec_block(finally_block) {
+                        Ok(ExecResult::Normal) => pending,
+                        Ok(other) => Ok(other),
+                        Err(e) => Err(e),
+                    };
                 }
+                pending
             }
             Stmt::Function { name, params, return_type, body, .. } => {
                 let captured = self.flatten_scopes();
@@ -267,6 +320,24 @@ impl Executor {
                 }
                 Ok(ExecResult::Continue)
             }
+            Stmt::Break { span } => {
+                if self.loop_depth == 0 {
+                    return Err(self.err("'break' used outside loop", *span));
+                }
+                Ok(ExecResult::Break)
+            }
+            Stmt::Throw { value, .. } => {
+                let v = self.eval_expr(value)?;
+                Ok(ExecResult::Throw(v))
+            }
+            Stmt::Defer { body, .. } => {
+                if let Some(scope) = self.deferred_scopes.last_mut() {
+                    scope.push(body.clone());
+                    Ok(ExecResult::Normal)
+                } else {
+                    Err(self.err("No active scope for defer", stmt.span()))
+                }
+            }
             Stmt::Invoke { name, expr, span } => {
                 let val = self.eval_expr(expr)?;
                 match name.as_str() {
@@ -286,15 +357,21 @@ impl Executor {
 
     fn exec_block(&mut self, stmts: &[Stmt]) -> Result<ExecResult, RuntimeError> {
         self.push_scope();
+        let mut pending: Result<ExecResult, RuntimeError> = Ok(ExecResult::Normal);
         for stmt in stmts {
-            let res = self.exec_stmt(stmt)?;
-            if matches!(res, ExecResult::Return(_) | ExecResult::Continue) {
-                self.pop_scope();
-                return Ok(res);
+            match self.exec_stmt(stmt) {
+                Ok(ExecResult::Normal) => {}
+                Ok(other) => {
+                    pending = Ok(other);
+                    break;
+                }
+                Err(e) => {
+                    pending = Err(e);
+                    break;
+                }
             }
         }
-        self.pop_scope();
-        Ok(ExecResult::Normal)
+        self.exit_scope(pending)
     }
 
     fn exec_parallel_for(&mut self, pattern: &Pattern, iterable: &Expr, body: &[Stmt]) -> Result<(), RuntimeError> {
@@ -337,7 +414,16 @@ impl Executor {
                     if cancel_flag.load(Ordering::Relaxed) {
                         break;
                     }
-                    let mut exec = Executor { filename: filename.clone(), source: source.clone(), scopes: vec![captured_env.clone()], stack: Vec::new(), last_span: Span { line: 1, col: 1 }, output_sink: output_sink.clone(), loop_depth: 0 };
+                    let mut exec = Executor {
+                        filename: filename.clone(),
+                        source: source.clone(),
+                        scopes: vec![captured_env.clone()],
+                        deferred_scopes: vec![Vec::new()],
+                        stack: Vec::new(),
+                        last_span: Span { line: 1, col: 1 },
+                        output_sink: output_sink.clone(),
+                        loop_depth: 0,
+                    };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
                         cancel_flag.store(true, Ordering::Relaxed);
@@ -421,7 +507,20 @@ impl Executor {
                 let c = self.eval_expr(callee)?;
                 let mut a = Vec::new();
                 for arg in args {
-                    a.push(self.eval_expr(arg)?);
+                    match arg {
+                        CallArg::Positional(expr) => {
+                            a.push(RuntimeCallArg::Positional(self.eval_expr(expr)?));
+                        }
+                        CallArg::Spread(expr) => {
+                            a.push(RuntimeCallArg::Spread(self.eval_expr(expr)?));
+                        }
+                        CallArg::Named { name, value } => {
+                            a.push(RuntimeCallArg::Named {
+                                name: name.clone(),
+                                value: self.eval_expr(value)?,
+                            });
+                        }
+                    }
                 }
                 self.call(c, a, *span)
             }
@@ -466,6 +565,27 @@ impl Executor {
                     self.eval_block_expr(else_branch)
                 }
             }
+            Expr::Match { subject, arms, span } => {
+                let subject_value = self.eval_expr(subject)?;
+                for arm in arms {
+                    let matched = match &arm.kind {
+                        MatchArmKind::Wildcard => true,
+                        MatchArmKind::Value(value_expr) => {
+                            let candidate = self.eval_expr(value_expr)?;
+                            subject_value.as_string() == candidate.as_string()
+                        }
+                        MatchArmKind::Compare { op, rhs } => {
+                            let rhs_value = self.eval_expr(rhs)?;
+                            let cmp = self.eval_binary(subject_value.clone(), op, rhs_value, *span)?;
+                            cmp.is_truthy()
+                        }
+                    };
+                    if matched {
+                        return self.eval_block_expr(&arm.body);
+                    }
+                }
+                Err(self.err("No match arm matched and wildcard arm was not reached", *span))
+            }
             Expr::ParallelFor { pattern, iterable, body, .. } => {
                 self.eval_parallel_for_expr(pattern, iterable, body)
             }
@@ -480,6 +600,7 @@ impl Executor {
                         filename,
                         source,
                         scopes: vec![captured],
+                        deferred_scopes: vec![Vec::new()],
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
                         output_sink,
@@ -492,7 +613,20 @@ impl Executor {
                 let callee_value = self.eval_expr(callee)?;
                 let mut arg_values = Vec::new();
                 for arg in args {
-                    arg_values.push(self.eval_expr(arg)?);
+                    match arg {
+                        CallArg::Positional(expr) => {
+                            arg_values.push(RuntimeCallArg::Positional(self.eval_expr(expr)?));
+                        }
+                        CallArg::Spread(expr) => {
+                            arg_values.push(RuntimeCallArg::Spread(self.eval_expr(expr)?));
+                        }
+                        CallArg::Named { name, value } => {
+                            arg_values.push(RuntimeCallArg::Named {
+                                name: name.clone(),
+                                value: self.eval_expr(value)?,
+                            });
+                        }
+                    }
                 }
                 let captured = self.flatten_scopes();
                 let filename = self.filename.clone();
@@ -503,6 +637,7 @@ impl Executor {
                         filename,
                         source,
                         scopes: vec![captured],
+                        deferred_scopes: vec![Vec::new()],
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
                         output_sink,
@@ -591,24 +726,32 @@ impl Executor {
     fn eval_block_expr(&mut self, stmts: &[Stmt]) -> Result<Value, RuntimeError> {
         self.push_scope();
         let mut last = Value::Null;
+        let mut pending: Result<ExecResult, RuntimeError> = Ok(ExecResult::Normal);
         for stmt in stmts {
             match stmt {
                 Stmt::Expr { expr, .. } => last = self.eval_expr(expr)?,
                 _ => {
-                    let res = self.exec_stmt(stmt)?;
-                    if let ExecResult::Return(v) = res {
-                        self.pop_scope();
-                        return Ok(v);
-                    }
-                    if let ExecResult::Continue = res {
-                        self.pop_scope();
-                        return Ok(last);
+                    match self.exec_stmt(stmt) {
+                        Ok(ExecResult::Normal) => {}
+                        Ok(other) => {
+                            pending = Ok(other);
+                            break;
+                        }
+                        Err(e) => {
+                            pending = Err(e);
+                            break;
+                        }
                     }
                 }
             }
         }
-        self.pop_scope();
-        Ok(last)
+        match self.exit_scope(pending)? {
+            ExecResult::Normal => Ok(last),
+            ExecResult::Return(v) => Ok(v),
+            ExecResult::Continue => Ok(last),
+            ExecResult::Break => Ok(last),
+            ExecResult::Throw(v) => Err(self.err(&format!("Uncaught throw: {}", v.as_string()), self.last_span)),
+        }
     }
 
     fn eval_parallel_for_expr(&mut self, pattern: &Pattern, iterable: &Expr, body: &[Stmt]) -> Result<Value, RuntimeError> {
@@ -657,6 +800,7 @@ impl Executor {
                         filename: filename.clone(),
                         source: source.clone(),
                         scopes: vec![captured_env.clone()],
+                        deferred_scopes: vec![Vec::new()],
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
                         output_sink: output_sink.clone(),
@@ -788,63 +932,251 @@ impl Executor {
         }
     }
 
-    fn call(&mut self, callee: Value, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
+    fn call(&mut self, callee: Value, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
         match callee {
             Value::NativeFunction(f) => {
-                f(args).map_err(|e| self.err(&e, span))
+                let positional = self.positional_only_args(args, span)?;
+                f(positional).map_err(|e| self.err(&e, span))
             }
             Value::NativeFunctionExec(f) => {
-                f(self, args, span)
+                let positional = self.positional_only_args(args, span)?;
+                f(self, positional, span)
             }
             Value::Ufcs { name, receiver } => {
-                let mut new_args = vec![*receiver];
+                let mut new_args = vec![RuntimeCallArg::Positional(*receiver)];
                 new_args.extend(args);
-                let recv = new_args[0].clone();
+                let recv = match &new_args[0] {
+                    RuntimeCallArg::Positional(v) => v.clone(),
+                    RuntimeCallArg::Spread(_) => Value::Null,
+                    RuntimeCallArg::Named { .. } => Value::Null,
+                };
                 let target = self
                     .lookup(&name)
                     .ok_or_else(|| self.unknown_method_or_function_error(&name, &recv, span))?;
                 self.call(target, new_args, span)
             }
             Value::Function(func) => {
-                if func.params.len() != args.len() {
-                    return Err(self.err("Arity mismatch", span));
-                }
                 self.push_frame(func.name.clone(), span);
-                let mut env = func.captured.clone();
-                for (i, (p, ty)) in func.params.iter().enumerate() {
-                    if let Some(t) = ty {
-                        if !type_matches(t, &args[i]) {
-                            return Err(self.err(&format!("Type mismatch for {}: expected {}, got {}", p, type_str(t), value_type_str(&args[i])), span));
-                        }
-                    }
-                    env.insert(p.clone(), args[i].clone());
-                }
-                self.push_scope_with(env);
-                let res = self.exec_block(&func.body)?;
-                self.pop_scope();
+                let res = self.call_user_function(&func, args, span);
                 self.pop_frame();
-                let out = if let ExecResult::Return(v) = res { v } else { Value::Null };
-                if let Some(t) = &func.return_type {
-                    if !type_matches(t, &out) {
-                        return Err(self.err(
-                            &format!(
-                                "Return type mismatch for {}: expected {}, got {}",
-                                func.name,
-                                type_str(t),
-                                value_type_str(&out)
-                            ),
-                            span,
-                        ));
-                    }
-                }
-                Ok(out)
+                res
             }
             _ => Err(self.err("Not callable", span)),
         }
     }
 
-    pub fn call_value(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    pub fn call_value(&mut self, callee: Value, args: Vec<RuntimeCallArg>) -> Result<Value, RuntimeError> {
         self.call(callee, args, Span { line: 0, col: 0 })
+    }
+
+    fn positional_only_args(&self, args: Vec<RuntimeCallArg>, span: Span) -> Result<Vec<Value>, RuntimeError> {
+        let mut out = Vec::new();
+        for arg in args {
+            match arg {
+                RuntimeCallArg::Positional(v) => out.push(v),
+                RuntimeCallArg::Spread(v) => {
+                    out.extend(self.expand_spread_value(v, span)?);
+                }
+                RuntimeCallArg::Named { .. } => {
+                    return Err(self.err("Named arguments are only supported for user-defined functions in v1", span));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn call_user_function(&mut self, func: &Function, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
+        let mut positional = Vec::new();
+        let mut named: HashMap<String, Value> = HashMap::new();
+        for arg in args {
+            match arg {
+                RuntimeCallArg::Positional(v) => positional.push(v),
+                RuntimeCallArg::Spread(v) => {
+                    positional.extend(self.expand_spread_value(v, span)?);
+                }
+                RuntimeCallArg::Named { name, value } => {
+                    if named.insert(name.clone(), value).is_some() {
+                        return Err(self.err(&format!("Duplicate named argument '{name}' for {}", func.name), span));
+                    }
+                }
+            }
+        }
+
+        self.push_scope_with(func.captured.clone());
+        let mut scope_closed = false;
+        let mut result = (|| -> Result<Value, RuntimeError> {
+            let variadic_param = func.params.iter().position(|p| p.variadic);
+            if let Some(vidx) = variadic_param {
+                if vidx != func.params.len() - 1 {
+                    return Err(self.err(
+                        &format!("Variadic parameter for {} must be the final parameter", func.name),
+                        span,
+                    ));
+                }
+            }
+
+            let fixed_count = if variadic_param.is_some() {
+                func.params.len().saturating_sub(1)
+            } else {
+                func.params.len()
+            };
+
+            if variadic_param.is_none() && positional.len() > func.params.len() {
+                return Err(self.err(
+                    &format!(
+                        "Too many positional arguments for {}: expected at most {}, got {}",
+                        func.name,
+                        func.params.len(),
+                        positional.len()
+                    ),
+                    span,
+                ));
+            }
+
+            let mut positional_index = 0usize;
+            for (param_idx, param) in func.params.iter().enumerate() {
+                if param.variadic {
+                    if named.contains_key(&param.name) {
+                        return Err(self.err(
+                            &format!("Variadic parameter '{}' for {} cannot be passed by name", param.name, func.name),
+                            span,
+                        ));
+                    }
+                    let mut rest_items = Vec::new();
+                    while positional_index < positional.len() {
+                        let v = positional[positional_index].clone();
+                        if let Some(t) = &param.ty {
+                            if !type_matches(t, &v) {
+                                return Err(self.err(
+                                    &format!(
+                                        "Type mismatch for variadic {}.{}: expected {}, got {}",
+                                        func.name,
+                                        param.name,
+                                        type_str(t),
+                                        value_type_str(&v)
+                                    ),
+                                    span,
+                                ));
+                            }
+                        }
+                        rest_items.push(v);
+                        positional_index += 1;
+                    }
+                    self.define(&param.name, Value::array(rest_items));
+                    continue;
+                }
+
+                if param_idx >= fixed_count {
+                    break;
+                }
+                let value = if positional_index < positional.len() {
+                    if named.contains_key(&param.name) {
+                        return Err(self.err(
+                            &format!("Argument '{}' for {} was provided both positionally and by name", param.name, func.name),
+                            span,
+                        ));
+                    }
+                    let v = positional[positional_index].clone();
+                    positional_index += 1;
+                    v
+                } else if let Some(v) = named.remove(&param.name) {
+                    v
+                } else if let Some(default_expr) = &param.default {
+                    self.eval_expr(default_expr)?
+                } else {
+                    return Err(self.err(
+                        &format!("Missing required argument '{}' for {}", param.name, func.name),
+                        span,
+                    ));
+                };
+
+                if let Some(t) = &param.ty {
+                    if !type_matches(t, &value) {
+                        return Err(self.err(
+                            &format!(
+                                "Type mismatch for {}.{}: expected {}, got {}",
+                                func.name,
+                                param.name,
+                                type_str(t),
+                                value_type_str(&value)
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                self.define(&param.name, value);
+            }
+
+            if variadic_param.is_none() && positional_index < positional.len() {
+                return Err(self.err(
+                    &format!(
+                        "Too many positional arguments for {}: expected at most {}, got {}",
+                        func.name,
+                        func.params.len(),
+                        positional.len()
+                    ),
+                    span,
+                ));
+            }
+
+            if let Some((unknown, _)) = named.iter().next() {
+                return Err(self.err(
+                    &format!("Unknown named argument '{}' for {}", unknown, func.name),
+                    span,
+                ));
+            }
+
+            let body_res = self.exec_block(&func.body);
+            let res = self.exit_scope(body_res);
+            scope_closed = true;
+            let res = res?;
+            let out = match res {
+                ExecResult::Normal => Value::Null,
+                ExecResult::Return(v) => v,
+                ExecResult::Continue => return Err(self.err("'continue' used outside loop", span)),
+                ExecResult::Break => return Err(self.err("'break' used outside loop", span)),
+                ExecResult::Throw(v) => {
+                    return Err(self.err(&format!("Uncaught throw: {}", v.as_string()), span))
+                }
+            };
+            if let Some(t) = &func.return_type {
+                if !type_matches(t, &out) {
+                    return Err(self.err(
+                        &format!(
+                            "Return type mismatch for {}: expected {}, got {}",
+                            func.name,
+                            type_str(t),
+                            value_type_str(&out)
+                        ),
+                        span,
+                    ));
+                }
+            }
+            Ok(out)
+        })();
+
+        if !scope_closed {
+            result = match result {
+                Ok(v) => {
+                    self.exit_scope(Ok(ExecResult::Normal))?;
+                    Ok(v)
+                }
+                Err(e) => match self.exit_scope(Err(e)) {
+                    Ok(_) => Ok(Value::Null),
+                    Err(e2) => Err(e2),
+                },
+            };
+        }
+
+        result
+    }
+
+    fn expand_spread_value(&self, value: Value, span: Span) -> Result<Vec<Value>, RuntimeError> {
+        match value {
+            Value::Array(arr) => Ok(arr.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())),
+            Value::Tuple(tup) => Ok(tup.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())),
+            _ => Err(self.err("Spread argument expects array or tuple", span)),
+        }
     }
 
     fn eval_binary(&self, l: Value, op: &str, r: Value, span: Span) -> Result<Value, RuntimeError> {
@@ -1070,14 +1402,27 @@ impl Executor {
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.deferred_scopes.push(Vec::new());
     }
 
     fn push_scope_with(&mut self, env: HashMap<String, Value>) {
         self.scopes.push(env);
+        self.deferred_scopes.push(Vec::new());
     }
 
-    fn pop_scope(&mut self) {
-        if self.scopes.len() > 1 { self.scopes.pop(); }
+    fn exit_scope(&mut self, mut pending: Result<ExecResult, RuntimeError>) -> Result<ExecResult, RuntimeError> {
+        let deferred_blocks = self.deferred_scopes.pop().unwrap_or_default();
+        for block in deferred_blocks.into_iter().rev() {
+            match self.exec_block(&block) {
+                Ok(ExecResult::Normal) => {}
+                Ok(other) => pending = Ok(other),
+                Err(e) => pending = Err(e),
+            }
+        }
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
+        pending
     }
 
     fn flatten_scopes(&self) -> HashMap<String, Value> {
@@ -1229,6 +1574,8 @@ enum ExecResult {
     Normal,
     Return(Value),
     Continue,
+    Break,
+    Throw(Value),
 }
 
 fn to_f64(v: Value) -> Result<f64, RuntimeError> {

@@ -1,6 +1,6 @@
 use crate::lexer::token::{Token, TokenKind};
 use crate::runtime::value::Value;
-use super::ast::{Expr, InterpPart, Pattern, Program, Span, Stmt};
+use super::ast::{CallArg, Expr, InterpPart, MatchArm, MatchArmKind, ParamSpec, Pattern, Program, Span, Stmt};
 
 pub struct Parser<'a> {
     tokens: Vec<Token>,
@@ -71,6 +71,26 @@ impl<'a> Parser<'a> {
             }
             return Ok(Stmt::Continue { span });
         }
+        if self.match_kind(&TokenKind::Break) {
+            let span = self.prev_span();
+            if self.check(&TokenKind::Semicolon) {
+                self.advance();
+            }
+            return Ok(Stmt::Break { span });
+        }
+        if self.match_kind(&TokenKind::Throw) {
+            let span = self.prev_span();
+            let value = self.parse_expression()?;
+            if self.check(&TokenKind::Semicolon) {
+                self.advance();
+            }
+            return Ok(Stmt::Throw { value, span });
+        }
+        if self.match_kind(&TokenKind::Defer) {
+            let span = self.prev_span();
+            let body = self.parse_block()?;
+            return Ok(Stmt::Defer { body, span });
+        }
         if self.match_kind(&TokenKind::If) {
             return self.parse_if_stmt();
         }
@@ -83,10 +103,27 @@ impl<'a> Parser<'a> {
         if self.match_kind(&TokenKind::Try) {
             let span = self.prev_span();
             let try_block = self.parse_block()?;
-            self.consume(&TokenKind::Catch, "Expected 'catch' after try block")?;
-            let err_name = self.consume_identifier("Expected catch variable name")?;
-            let catch_block = self.parse_block()?;
-            return Ok(Stmt::TryCatch { try_block, err_name, catch_block, span });
+            let mut catch_name = None;
+            let mut catch_block = None;
+            let mut finally_block = None;
+
+            if self.match_kind(&TokenKind::Catch) {
+                catch_name = Some(self.consume_identifier("Expected catch variable name")?);
+                catch_block = Some(self.parse_block()?);
+            }
+            if self.match_kind(&TokenKind::Finally) {
+                finally_block = Some(self.parse_block()?);
+            }
+            if catch_block.is_none() && finally_block.is_none() {
+                return Err(self.error_at_current("Expected 'catch' or 'finally' after try block"));
+            }
+            return Ok(Stmt::Try {
+                try_block,
+                catch_name,
+                catch_block,
+                finally_block,
+                span,
+            });
         }
         if self.match_kind(&TokenKind::Parallel) {
             return self.parse_parallel_for_stmt();
@@ -370,6 +407,9 @@ impl<'a> Parser<'a> {
             let else_branch = if self.match_kind(&TokenKind::Else) { self.parse_block()? } else { Vec::new() };
             return Ok(Expr::IfExpr { cond: Box::new(cond), then_branch, else_branch, span });
         }
+        if self.match_kind(&TokenKind::Match) {
+            return self.parse_match_expr();
+        }
         if self.match_kind(&TokenKind::Parallel) {
             return self.parse_parallel_for_expr();
         }
@@ -385,7 +425,15 @@ impl<'a> Parser<'a> {
                 if args.is_empty() {
                     return Err(self.error_at_current("task(...) expects callable as first argument"));
                 }
-                let callee = args.remove(0);
+                let callee = match args.remove(0) {
+                    CallArg::Positional(expr) => expr,
+                    CallArg::Spread(_) => {
+                        return Err(self.error_at_current("task(...) expects callable as first positional argument"));
+                    }
+                    CallArg::Named { .. } => {
+                        return Err(self.error_at_current("task(...) expects callable as first positional argument"));
+                    }
+                };
                 return Ok(Expr::TaskCall { callee: Box::new(callee), args, span });
             }
             return Err(self.error_at_current("Expected '{' or '(' after 'task'"));
@@ -458,28 +506,132 @@ impl<'a> Parser<'a> {
         Err(self.error_at_current("Unexpected token in expression"))
     }
 
-    fn parse_param_list(&mut self) -> Result<Vec<(String, Option<super::ast::TypeExpr>)>, String> {
+    fn parse_match_expr(&mut self) -> Result<Expr, String> {
+        let span = self.prev_span();
+        let subject = self.parse_expression()?;
+        self.consume(&TokenKind::LBrace, "Expected '{' after match subject")?;
+
+        let mut arms = Vec::new();
+        let mut wildcard_count = 0usize;
+
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            let kind = if self.match_kind(&TokenKind::Underscore) {
+                wildcard_count += 1;
+                MatchArmKind::Wildcard
+            } else if self.match_any(&[
+                TokenKind::Less,
+                TokenKind::LessEqual,
+                TokenKind::Greater,
+                TokenKind::GreaterEqual,
+                TokenKind::EqualEqual,
+                TokenKind::NotEqual,
+            ]) {
+                let op = self.previous_lexeme();
+                let rhs = self.parse_expression()?;
+                MatchArmKind::Compare { op, rhs }
+            } else {
+                let value = self.parse_expression()?;
+                MatchArmKind::Value(value)
+            };
+
+            self.consume(&TokenKind::FatArrow, "Expected '=>' in match arm")?;
+            let body = self.parse_match_arm_body()?;
+            arms.push(MatchArm { kind, body });
+
+            if self.match_kind(&TokenKind::Comma) {
+                continue;
+            }
+            if self.check(&TokenKind::RBrace) {
+                break;
+            }
+            return Err(self.error_at_current("Expected ',' or '}' after match arm"));
+        }
+
+        self.consume(&TokenKind::RBrace, "Expected '}' after match")?;
+        if wildcard_count == 0 {
+            return Err(format!(
+                "{}:{}:{}: match requires a wildcard arm '_'",
+                self.filename, span.line, span.col
+            ));
+        }
+        if wildcard_count > 1 {
+            return Err(format!(
+                "{}:{}:{}: match can only contain one wildcard arm '_'",
+                self.filename, span.line, span.col
+            ));
+        }
+
+        Ok(Expr::Match { subject: Box::new(subject), arms, span })
+    }
+
+    fn parse_match_arm_body(&mut self) -> Result<Vec<Stmt>, String> {
+        if self.check(&TokenKind::LBrace) {
+            return self.parse_block();
+        }
+        let expr = self.parse_expression()?;
+        Ok(vec![Stmt::Expr { expr: expr.clone(), span: expr.span() }])
+    }
+
+    fn parse_param_list(&mut self) -> Result<Vec<ParamSpec>, String> {
         let mut params = Vec::new();
+        let mut saw_default = false;
+        let mut saw_variadic = false;
         if !self.check(&TokenKind::RParen) {
             loop {
+                let variadic = self.match_kind(&TokenKind::Ellipsis);
+                if saw_variadic {
+                    return Err(self.error_at_current("Variadic parameter must be the final parameter"));
+                }
                 let name = self.consume_identifier("Expected parameter name")?;
                 let ty = if self.match_kind(&TokenKind::Colon) {
                     Some(self.parse_type()?)
                 } else {
                     None
                 };
-                params.push((name, ty));
+                let default = if self.match_kind(&TokenKind::Equal) {
+                    if variadic {
+                        return Err(self.error_at_current("Variadic parameter cannot have a default value"));
+                    }
+                    saw_default = true;
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                if variadic {
+                    saw_variadic = true;
+                }
+                if saw_default && default.is_none() {
+                    return Err(self.error_at_current("Required parameters cannot follow parameters with defaults"));
+                }
+                params.push(ParamSpec { name, ty, default, variadic });
                 if !self.match_kind(&TokenKind::Comma) { break; }
             }
         }
         Ok(params)
     }
 
-    fn parse_arguments(&mut self) -> Result<Vec<Expr>, String> {
+    fn parse_arguments(&mut self) -> Result<Vec<CallArg>, String> {
         let mut args = Vec::new();
+        let mut saw_named = false;
         if !self.check(&TokenKind::RParen) {
             loop {
-                args.push(self.parse_expression()?);
+                if self.check(&TokenKind::Identifier(String::new())) && self.peek_next_is_equal() {
+                    saw_named = true;
+                    let name = self.consume_identifier("Expected argument name")?;
+                    self.consume(&TokenKind::Equal, "Expected '=' in named argument")?;
+                    let value = self.parse_expression()?;
+                    args.push(CallArg::Named { name, value });
+                } else {
+                    if saw_named {
+                        return Err(self.error_at_current("Positional arguments cannot appear after named arguments"));
+                    }
+                    if self.match_kind(&TokenKind::Ellipsis) {
+                        let spread_expr = self.parse_expression()?;
+                        args.push(CallArg::Spread(spread_expr));
+                    } else {
+                        args.push(CallArg::Positional(self.parse_expression()?));
+                    }
+                }
                 if !self.match_kind(&TokenKind::Comma) { break; }
             }
         }
@@ -607,7 +759,12 @@ impl<'a> Parser<'a> {
         let param = self.consume_identifier("Expected parameter name")?;
         self.consume(&TokenKind::Arrow, "Expected '->' after parameter")?;
         let body = self.parse_lambda_body()?;
-        Ok(Expr::Lambda { params: vec![(param, None)], return_type: None, body, span })
+        Ok(Expr::Lambda {
+            params: vec![ParamSpec { name: param, ty: None, default: None, variadic: false }],
+            return_type: None,
+            body,
+            span,
+        })
     }
 
     fn parse_arrow_lambda_multi(&mut self) -> Result<Expr, String> {
@@ -849,6 +1006,10 @@ impl<'a> Parser<'a> {
 
     fn peek_next_is_arrow(&self) -> bool {
         matches!(self.peek_next().kind, TokenKind::Arrow)
+    }
+
+    fn peek_next_is_equal(&self) -> bool {
+        matches!(self.peek_next().kind, TokenKind::Equal)
     }
 
     fn next_is_arrow_after_params(&self) -> bool {

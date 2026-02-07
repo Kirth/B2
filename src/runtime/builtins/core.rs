@@ -2,7 +2,7 @@ use std::fs;
 use std::thread;
 use std::time::Duration;
 
-use crate::runtime::executor::Executor;
+use crate::runtime::executor::{Executor, RuntimeCallArg};
 use crate::runtime::errors::RuntimeError;
 use crate::runtime::value::Value;
 
@@ -48,7 +48,7 @@ pub fn register(exec: &mut Executor) {
         let items = iter_values(iterable, exec, span)?;
         let mut out = Vec::new();
         for item in items {
-            let result = exec.call_value(func.clone(), vec![item])?;
+            let result = exec.call_value(func.clone(), vec![RuntimeCallArg::Positional(item)])?;
             out.push(result);
         }
         Ok(Value::array(out))
@@ -59,7 +59,7 @@ pub fn register(exec: &mut Executor) {
         let items = iter_values(iterable, exec, span)?;
         let mut out = Vec::new();
         for item in items {
-            let result = exec.call_value(func.clone(), vec![item.clone()])?;
+            let result = exec.call_value(func.clone(), vec![RuntimeCallArg::Positional(item.clone())])?;
             if result.is_truthy() {
                 out.push(item);
             }
@@ -83,7 +83,10 @@ pub fn register(exec: &mut Executor) {
         };
         let items = iter_values(iterable, exec, span)?;
         for item in items {
-            let result = exec.call_value(func.clone(), vec![acc, item])?;
+            let result = exec.call_value(
+                func.clone(),
+                vec![RuntimeCallArg::Positional(acc), RuntimeCallArg::Positional(item)],
+            )?;
             acc = result;
         }
         Ok(acc)

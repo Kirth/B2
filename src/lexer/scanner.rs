@@ -54,7 +54,11 @@ impl<'a> Scanner<'a> {
             ';' => Ok(Some(self.simple(TokenKind::Semicolon))),
             '.' => {
                 if self.match_char('.') {
-                    Ok(Some(self.simple(TokenKind::DotDot)))
+                    if self.match_char('.') {
+                        Ok(Some(self.simple(TokenKind::Ellipsis)))
+                    } else {
+                        Ok(Some(self.simple(TokenKind::DotDot)))
+                    }
                 } else {
                     Ok(Some(self.simple(TokenKind::Dot)))
                 }
@@ -96,6 +100,8 @@ impl<'a> Scanner<'a> {
             '=' => {
                 if self.match_char('=') {
                     Ok(Some(self.simple(TokenKind::EqualEqual)))
+                } else if self.match_char('>') {
+                    Ok(Some(self.simple(TokenKind::FatArrow)))
                 } else {
                     Ok(Some(self.simple(TokenKind::Equal)))
                 }
@@ -207,6 +213,8 @@ impl<'a> Scanner<'a> {
             "fn" => TokenKind::Fn,
             "return" => TokenKind::Return,
             "continue" => TokenKind::Continue,
+            "break" => TokenKind::Break,
+            "throw" => TokenKind::Throw,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "for" => TokenKind::For,
@@ -220,8 +228,11 @@ impl<'a> Scanner<'a> {
             "parallel" => TokenKind::Parallel,
             "task" => TokenKind::Task,
             "await" => TokenKind::Await,
+            "match" => TokenKind::Match,
             "try" => TokenKind::Try,
             "catch" => TokenKind::Catch,
+            "finally" => TokenKind::Finally,
+            "defer" => TokenKind::Defer,
             _ => TokenKind::Identifier(text.to_string()),
         };
         Ok(Some(self.token_from(kind)))
