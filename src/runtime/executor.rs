@@ -56,6 +56,10 @@ impl Executor {
         );
     }
 
+    pub fn register_value(&mut self, name: &str, value: Value) {
+        self.scopes[0].insert(name.to_string(), value);
+    }
+
     pub fn execute(&mut self, program: &Program) -> Result<(), RuntimeError> {
         for stmt in &program.statements {
             match self.exec_stmt(stmt)? {
@@ -353,6 +357,9 @@ impl Executor {
                     self.eval_block_expr(else_branch)
                 }
             }
+            Expr::ParallelFor { pattern, iterable, body, .. } => {
+                self.eval_parallel_for_expr(pattern, iterable, body)
+            }
             Expr::Lambda { params, return_type, body, .. } => {
                 let captured = self.flatten_scopes();
                 let func = Function {
@@ -431,6 +438,116 @@ impl Executor {
         }
         self.pop_scope();
         Ok(last)
+    }
+
+    fn eval_parallel_for_expr(&mut self, pattern: &Pattern, iterable: &Expr, body: &[Stmt]) -> Result<Value, RuntimeError> {
+        let it = self.eval_expr(iterable)?;
+        let items = self.iterate_value(it)?;
+        if items.is_empty() {
+            return Ok(Value::array(Vec::new()));
+        }
+
+        let captured = self.flatten_scopes();
+        let pool_size = parallelism_cap();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let (job_tx, job_rx) = mpsc::channel::<(usize, Value)>();
+        let (res_tx, res_rx) = mpsc::channel::<(usize, Value)>();
+        let (err_tx, err_rx) = mpsc::channel::<RuntimeError>();
+        let shared_rx = Arc::new(Mutex::new(job_rx));
+
+        let mut handles = Vec::new();
+        for _ in 0..pool_size {
+            let rx = Arc::clone(&shared_rx);
+            let result_sender = res_tx.clone();
+            let err_sender = err_tx.clone();
+            let cancel_flag = cancel.clone();
+            let body = body.to_vec();
+            let captured_env = captured.clone();
+            let pattern = pattern.clone();
+            let filename = self.filename.clone();
+            let source = self.source.clone();
+
+            let handle = thread::spawn(move || {
+                while !cancel_flag.load(Ordering::Relaxed) {
+                    let (idx, item) = match rx.lock() {
+                        Ok(guard) => match guard.recv() {
+                            Ok(v) => v,
+                            Err(_) => break,
+                        },
+                        Err(_) => break,
+                    };
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    let mut exec = Executor {
+                        filename: filename.clone(),
+                        source: source.clone(),
+                        scopes: vec![captured_env.clone()],
+                        stack: Vec::new(),
+                        last_span: Span { line: 1, col: 1 },
+                    };
+                    if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
+                        let _ = err_sender.send(e);
+                        cancel_flag.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    match exec.eval_block_expr(&body) {
+                        Ok(v) => {
+                            if result_sender.send((idx, v)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = err_sender.send(e);
+                            cancel_flag.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        drop(res_tx);
+
+        let expected_count = items.len();
+        for (idx, item) in items.into_iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            if job_tx.send((idx, item)).is_err() {
+                break;
+            }
+        }
+        drop(job_tx);
+
+        if let Ok(err) = err_rx.try_recv() {
+            cancel.store(true, Ordering::Relaxed);
+            for h in handles {
+                let _ = h.join();
+            }
+            return Err(err);
+        }
+
+        let mut ordered: Vec<Option<Value>> = vec![None; expected_count];
+        for (idx, v) in res_rx {
+            if idx >= ordered.len() {
+                ordered.resize(idx + 1, None);
+            }
+            ordered[idx] = Some(v);
+        }
+
+        for h in handles {
+            let _ = h.join();
+        }
+
+        if let Ok(err) = err_rx.try_recv() {
+            return Err(err);
+        }
+
+        let values = ordered.into_iter().map(|v| v.unwrap_or(Value::Null)).collect();
+        Ok(Value::array(values))
     }
 
     fn call(&mut self, callee: Value, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {

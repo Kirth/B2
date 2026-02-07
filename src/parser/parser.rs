@@ -161,6 +161,19 @@ impl<'a> Parser<'a> {
         Ok(Stmt::ParallelFor { pattern, iterable, body, span })
     }
 
+    fn parse_parallel_for_expr(&mut self) -> Result<Expr, String> {
+        let span = self.prev_span();
+        self.consume(&TokenKind::For, "Expected 'for' after 'parallel'")?;
+        let pattern = self.parse_pattern_list()?;
+        let in_tok = self.consume_identifier("Expected 'in' after loop variable")?;
+        if in_tok != "in" {
+            return Err(self.error_at_current("Expected 'in' after loop variable"));
+        }
+        let iterable = self.parse_expression()?;
+        let body = self.parse_block()?;
+        Ok(Expr::ParallelFor { pattern, iterable: Box::new(iterable), body, span })
+    }
+
     fn parse_while_stmt(&mut self) -> Result<Stmt, String> {
         let span = self.prev_span();
         let cond = self.parse_expression()?;
@@ -336,6 +349,9 @@ impl<'a> Parser<'a> {
             let else_branch = if self.match_kind(&TokenKind::Else) { self.parse_block()? } else { Vec::new() };
             return Ok(Expr::IfExpr { cond: Box::new(cond), then_branch, else_branch, span });
         }
+        if self.match_kind(&TokenKind::Parallel) {
+            return self.parse_parallel_for_expr();
+        }
         if self.match_kind(&TokenKind::Fn) {
             let span = self.prev_span();
             self.consume(&TokenKind::LParen, "Expected '(' after 'fn'")?;
@@ -447,7 +463,7 @@ impl<'a> Parser<'a> {
         let mut pairs = Vec::new();
         if !self.check(&TokenKind::RBrace) {
             loop {
-                let key = self.parse_expression()?;
+                let key = self.parse_dict_key()?;
                 self.consume(&TokenKind::Colon, "Expected ':' in dict")?;
                 let value = self.parse_expression()?;
                 pairs.push((key, value));
@@ -455,6 +471,15 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(pairs)
+    }
+
+    fn parse_dict_key(&mut self) -> Result<Expr, String> {
+        if self.check(&TokenKind::Identifier(String::new())) && matches!(self.peek_next().kind, TokenKind::Colon) {
+            let key = self.consume_identifier("Expected dict key")?;
+            let span = self.prev_span();
+            return Ok(Expr::Literal { value: Value::String(key), span });
+        }
+        self.parse_expression()
     }
 
     fn is_dict_start(&self) -> bool {

@@ -59,6 +59,7 @@ pub enum Expr {
     Dict { items: Vec<(Expr, Expr)>, span: Span },
     Range { start: Box<Expr>, end: Box<Expr>, span: Span },
     IfExpr { cond: Box<Expr>, then_branch: Vec<Stmt>, else_branch: Vec<Stmt>, span: Span },
+    ParallelFor { pattern: Pattern, iterable: Box<Expr>, body: Vec<Stmt>, span: Span },
     Lambda { params: Vec<(String, Option<TypeExpr>)>, return_type: Option<TypeExpr>, body: Vec<Stmt>, span: Span },
     InterpolatedString { parts: Vec<InterpPart>, span: Span },
     Sh { command: Box<Expr>, span: Span },
@@ -105,6 +106,7 @@ impl Expr {
             | Expr::Dict { span, .. }
             | Expr::Range { span, .. }
             | Expr::IfExpr { span, .. }
+            | Expr::ParallelFor { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::InterpolatedString { span, .. }
             | Expr::Sh { span, .. }
