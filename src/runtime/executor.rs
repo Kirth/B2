@@ -44,6 +44,7 @@ pub struct Executor {
     scopes: Vec<HashMap<String, Value>>,
     stack: Vec<Frame>,
     last_span: Span,
+    output_sink: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 impl Executor {
@@ -54,7 +55,18 @@ impl Executor {
             scopes: vec![HashMap::new()],
             stack: Vec::new(),
             last_span: Span { line: 1, col: 1 },
+            output_sink: None,
         }
+    }
+
+    pub fn set_output_sink(&mut self, sink: Option<Arc<dyn Fn(String) + Send + Sync>>) {
+        self.output_sink = sink;
+    }
+
+    pub fn set_context(&mut self, filename: String, source: String) {
+        self.filename = filename;
+        self.source = source;
+        self.last_span = Span { line: 1, col: 1 };
     }
 
     pub fn register_native<F>(&mut self, name: &str, func: F)
@@ -89,6 +101,38 @@ impl Executor {
             }
         }
         Ok(())
+    }
+
+    pub fn execute_repl(&mut self, program: &Program) -> Result<Option<Value>, RuntimeError> {
+        let mut last_expr = None;
+        for stmt in &program.statements {
+            match stmt {
+                Stmt::Expr { expr, .. } => {
+                    self.last_span = stmt.span();
+                    last_expr = Some(self.eval_expr(expr)?);
+                }
+                _ => match self.exec_stmt(stmt)? {
+                    ExecResult::Normal => {}
+                    ExecResult::Return(_) => {}
+                },
+            }
+        }
+        Ok(last_expr)
+    }
+
+    pub fn list_globals(&self) -> Vec<(String, Value)> {
+        if self.scopes.is_empty() {
+            return Vec::new();
+        }
+        let mut entries: Vec<(String, Value)> = self.scopes[0]
+            .iter()
+            .filter_map(|(k, v)| match v {
+                Value::NativeFunction(_) | Value::NativeFunctionExec(_) => None,
+                _ => Some((k.clone(), v.clone())),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
     }
 
     fn exec_stmt(&mut self, stmt: &Stmt) -> Result<ExecResult, RuntimeError> {
@@ -202,11 +246,11 @@ impl Executor {
                 let val = self.eval_expr(expr)?;
                 match name.as_str() {
                     "log" => {
-                        println!("[{}] {}", now_hms(), val.as_string());
+                        self.emit_output(format!("[{}] {}", now_hms(), val.as_string()));
                         Ok(ExecResult::Normal)
                     }
                     "echo" => {
-                        println!("{}", val.as_string());
+                        self.emit_output(val.as_string());
                         Ok(ExecResult::Normal)
                     }
                     _ => Err(self.err("Unknown invocation", *span)),
@@ -254,6 +298,7 @@ impl Executor {
             let pattern = pattern.clone();
             let filename = self.filename.clone();
             let source = self.source.clone();
+            let output_sink = self.output_sink.clone();
 
             let handle = thread::spawn(move || {
                 while !cancel_flag.load(Ordering::Relaxed) {
@@ -267,7 +312,7 @@ impl Executor {
                     if cancel_flag.load(Ordering::Relaxed) {
                         break;
                     }
-                    let mut exec = Executor { filename: filename.clone(), source: source.clone(), scopes: vec![captured_env.clone()], stack: Vec::new(), last_span: Span { line: 1, col: 1 } };
+                    let mut exec = Executor { filename: filename.clone(), source: source.clone(), scopes: vec![captured_env.clone()], stack: Vec::new(), last_span: Span { line: 1, col: 1 }, output_sink: output_sink.clone() };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
                         cancel_flag.store(true, Ordering::Relaxed);
@@ -404,6 +449,7 @@ impl Executor {
                 let captured = self.flatten_scopes();
                 let filename = self.filename.clone();
                 let source = self.source.clone();
+                let output_sink = self.output_sink.clone();
                 Ok(self.spawn_task(move || {
                     let mut exec = Executor {
                         filename,
@@ -411,6 +457,7 @@ impl Executor {
                         scopes: vec![captured],
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
+                        output_sink,
                     };
                     exec.eval_block_expr(&body)
                 }))
@@ -424,6 +471,7 @@ impl Executor {
                 let captured = self.flatten_scopes();
                 let filename = self.filename.clone();
                 let source = self.source.clone();
+                let output_sink = self.output_sink.clone();
                 Ok(self.spawn_task(move || {
                     let mut exec = Executor {
                         filename,
@@ -431,6 +479,7 @@ impl Executor {
                         scopes: vec![captured],
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
+                        output_sink,
                     };
                     exec.call_value(callee_value, arg_values)
                 }))
@@ -558,6 +607,7 @@ impl Executor {
             let pattern = pattern.clone();
             let filename = self.filename.clone();
             let source = self.source.clone();
+            let output_sink = self.output_sink.clone();
 
             let handle = thread::spawn(move || {
                 while !cancel_flag.load(Ordering::Relaxed) {
@@ -578,6 +628,7 @@ impl Executor {
                         scopes: vec![captured_env.clone()],
                         stack: Vec::new(),
                         last_span: Span { line: 1, col: 1 },
+                        output_sink: output_sink.clone(),
                     };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
@@ -1013,6 +1064,14 @@ impl Executor {
 
     fn pop_frame(&mut self) {
         self.stack.pop();
+    }
+
+    fn emit_output(&self, line: String) {
+        if let Some(sink) = &self.output_sink {
+            sink(line);
+        } else {
+            println!("{line}");
+        }
     }
 
     fn err(&self, message: &str, span: Span) -> RuntimeError {
