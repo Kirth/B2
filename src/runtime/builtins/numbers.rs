@@ -2,37 +2,37 @@ use crate::runtime::value::Value;
 
 pub fn get_method(name: &str, receiver: f64) -> Option<Value> {
     let method = match name {
-        "Abs" => native(move |_args| Ok(Value::Number(receiver.abs()))),
-        "Floor" => native(move |_args| Ok(Value::Number(receiver.floor()))),
-        "Ceil" => native(move |_args| Ok(Value::Number(receiver.ceil()))),
-        "Round" => native(move |_args| Ok(Value::Number(receiver.round()))),
-        "Min" => native(move |args| {
+        "abs" => native(move |_args| Ok(Value::Number(receiver.abs()))),
+        "floor" => native(move |_args| Ok(Value::Number(receiver.floor()))),
+        "ceil" => native(move |_args| Ok(Value::Number(receiver.ceil()))),
+        "round" => native(move |_args| Ok(Value::Number(receiver.round()))),
+        "min" => native(move |args| {
             let other = expect_number(args.get(0))?;
             Ok(Value::Number(receiver.min(other)))
         }),
-        "Max" => native(move |args| {
+        "max" => native(move |args| {
             let other = expect_number(args.get(0))?;
             Ok(Value::Number(receiver.max(other)))
         }),
-        "Clamp" => native(move |args| {
+        "clamp" => native(move |args| {
             let min = expect_number(args.get(0))?;
             let max = expect_number(args.get(1))?;
             Ok(Value::Number(receiver.clamp(min, max)))
         }),
-        "Pow" => native(move |args| {
+        "pow" => native(move |args| {
             let exp = expect_number(args.get(0))?;
             Ok(Value::Number(receiver.powf(exp)))
         }),
-        "Sqrt" => native(move |_args| {
+        "sqrt" => native(move |_args| {
             if receiver < 0.0 {
-                return Err("Sqrt of negative number".to_string());
+                return Err("sqrt of negative number".to_string());
             }
             Ok(Value::Number(receiver.sqrt()))
         }),
-        "ToInt" => native(move |_args| Ok(Value::Number(receiver.trunc()))),
-        "ToFloat" => native(move |_args| Ok(Value::Number(receiver))),
-        "IsInt" => native(move |_args| Ok(Value::Bool(receiver.fract() == 0.0))),
-        "ToString" => native(move |_args| Ok(Value::String(receiver.to_string()))),
+        "toInt" => native(move |_args| Ok(Value::Number(receiver.trunc()))),
+        "toFloat" => native(move |_args| Ok(Value::Number(receiver))),
+        "isInt" => native(move |_args| Ok(Value::Bool(receiver.fract() == 0.0))),
+        "toString" => native(move |_args| Ok(Value::String(receiver.to_string()))),
         _ => return None,
     };
 

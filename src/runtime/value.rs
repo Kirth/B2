@@ -3,7 +3,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::executor::Function;
+use super::executor::{Function, TaskHandle};
 
 #[derive(Clone)]
 pub enum Value {
@@ -16,6 +16,7 @@ pub enum Value {
     Dict(Arc<Mutex<HashMap<String, Value>>>),
     Range(i64, i64),
     Duration(Duration),
+    Task(Arc<TaskHandle>),
     Function(Arc<Function>),
     NativeFunction(Arc<dyn Fn(Vec<Value>) -> Result<Value, String> + Send + Sync>),
     NativeFunctionExec(Arc<dyn Fn(&mut crate::runtime::executor::Executor, Vec<Value>, crate::parser::ast::Span) -> Result<Value, crate::runtime::errors::RuntimeError> + Send + Sync>),
@@ -61,6 +62,7 @@ impl Value {
             Value::Dict(d) => !d.lock().map(|v| v.is_empty()).unwrap_or(true),
             Value::Range(_, _) => true,
             Value::Duration(d) => d.as_millis() != 0,
+            Value::Task(_) => true,
             Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) | Value::Ufcs { .. } => true,
         }
     }
@@ -92,6 +94,7 @@ impl Value {
             }
             Value::Range(a, b) => format!("{}..{}", a, b),
             Value::Duration(d) => format!("{}ms", d.as_millis()),
+            Value::Task(_) => "<task>".to_string(),
             Value::Function(_) => "<fn>".to_string(),
             Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "<native fn>".to_string(),
             Value::Ufcs { name, .. } => format!("<ufcs {}>", name),

@@ -146,6 +146,7 @@ fn type_name(value: &Value) -> &'static str {
         Value::Dict(_) => "Dict",
         Value::Range(_, _) => "Range",
         Value::Duration(_) => "Duration",
+        Value::Task(_) => "Task",
         Value::Function(_) => "Function",
         Value::NativeFunction(_) => "NativeFunction",
         Value::NativeFunctionExec(_) => "NativeFunctionExec",

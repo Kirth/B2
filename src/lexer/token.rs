@@ -15,6 +15,10 @@ pub enum TokenKind {
     Sh,
     Ssh,
     Parallel,
+    Task,
+    Await,
+    Try,
+    Catch,
 
     // Operators / punctuation
     LParen,
@@ -41,6 +45,7 @@ pub enum TokenKind {
     Greater,
     GreaterEqual,
     Bang,
+    Question,
     AndAnd,
     OrOr,
     Arrow,

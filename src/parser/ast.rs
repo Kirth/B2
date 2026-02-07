@@ -40,6 +40,7 @@ pub enum Stmt {
     For { pattern: Pattern, iterable: Expr, body: Vec<Stmt>, span: Span },
     ParallelFor { pattern: Pattern, iterable: Expr, body: Vec<Stmt>, span: Span },
     While { cond: Expr, body: Vec<Stmt>, span: Span },
+    TryCatch { try_block: Vec<Stmt>, err_name: String, catch_block: Vec<Stmt>, span: Span },
     Function { name: String, params: Vec<(String, Option<TypeExpr>)>, return_type: Option<TypeExpr>, body: Vec<Stmt>, span: Span },
     Return { value: Option<Expr>, span: Span },
     Invoke { name: String, expr: Expr, span: Span },
@@ -60,6 +61,9 @@ pub enum Expr {
     Range { start: Box<Expr>, end: Box<Expr>, span: Span },
     IfExpr { cond: Box<Expr>, then_branch: Vec<Stmt>, else_branch: Vec<Stmt>, span: Span },
     ParallelFor { pattern: Pattern, iterable: Box<Expr>, body: Vec<Stmt>, span: Span },
+    TaskBlock { body: Vec<Stmt>, span: Span },
+    TaskCall { callee: Box<Expr>, args: Vec<Expr>, span: Span },
+    Await { expr: Box<Expr>, safe: bool, span: Span },
     Lambda { params: Vec<(String, Option<TypeExpr>)>, return_type: Option<TypeExpr>, body: Vec<Stmt>, span: Span },
     InterpolatedString { parts: Vec<InterpPart>, span: Span },
     Sh { command: Box<Expr>, span: Span },
@@ -84,6 +88,7 @@ impl Stmt {
             | Stmt::For { span, .. }
             | Stmt::ParallelFor { span, .. }
             | Stmt::While { span, .. }
+            | Stmt::TryCatch { span, .. }
             | Stmt::Function { span, .. }
             | Stmt::Return { span, .. }
             | Stmt::Invoke { span, .. } => *span,
@@ -107,6 +112,9 @@ impl Expr {
             | Expr::Range { span, .. }
             | Expr::IfExpr { span, .. }
             | Expr::ParallelFor { span, .. }
+            | Expr::TaskBlock { span, .. }
+            | Expr::TaskCall { span, .. }
+            | Expr::Await { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::InterpolatedString { span, .. }
             | Expr::Sh { span, .. }

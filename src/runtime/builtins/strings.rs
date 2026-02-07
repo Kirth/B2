@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
     let receiver = receiver.to_string();
     let method = match name {
-        "Length" => native(move |_args| Ok(Value::Number(receiver.chars().count() as f64))),
-        "ToUpper" => native(move |_args| Ok(Value::String(receiver.to_uppercase()))),
-        "ToLower" => native(move |_args| Ok(Value::String(receiver.to_lowercase()))),
-        "Trim" => native(move |_args| Ok(Value::String(receiver.trim().to_string()))),
-        "Split" => native(move |args| {
+        "length" => native(move |_args| Ok(Value::Number(receiver.chars().count() as f64))),
+        "toUpper" => native(move |_args| Ok(Value::String(receiver.to_uppercase()))),
+        "toLower" => native(move |_args| Ok(Value::String(receiver.to_lowercase()))),
+        "trim" => native(move |_args| Ok(Value::String(receiver.trim().to_string()))),
+        "split" => native(move |args| {
             let sep = expect_string(args.get(0))?;
             if sep.is_empty() {
                 let parts: Vec<Value> = receiver.chars().map(|c| Value::String(c.to_string())).collect();
@@ -20,31 +20,31 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
                 Ok(Value::Array(Arc::new(Mutex::new(parts))))
             }
         }),
-        "Lines" | "lines" => native(move |_args| {
+        "lines" => native(move |_args| {
             let parts: Vec<Value> = receiver
                 .lines()
                 .map(|s| Value::String(s.to_string()))
                 .collect();
             Ok(Value::Array(Arc::new(Mutex::new(parts))))
         }),
-        "Contains" => native(move |args| {
+        "contains" => native(move |args| {
             let sub = expect_string(args.get(0))?;
             Ok(Value::Bool(receiver.contains(&sub)))
         }),
-        "StartsWith" => native(move |args| {
+        "startsWith" => native(move |args| {
             let sub = expect_string(args.get(0))?;
             Ok(Value::Bool(receiver.starts_with(&sub)))
         }),
-        "EndsWith" => native(move |args| {
+        "endsWith" => native(move |args| {
             let sub = expect_string(args.get(0))?;
             Ok(Value::Bool(receiver.ends_with(&sub)))
         }),
-        "Replace" => native(move |args| {
+        "replace" => native(move |args| {
             let from = expect_string(args.get(0))?;
             let to = expect_string(args.get(1))?;
             Ok(Value::String(receiver.replace(&from, &to)))
         }),
-        "Substring" => native(move |args| {
+        "substring" => native(move |args| {
             let start = expect_usize(args.get(0))?;
             let len = expect_usize(args.get(1))?;
             let chars: Vec<char> = receiver.chars().collect();
@@ -52,19 +52,19 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
             let end = (start + len).min(chars.len());
             Ok(Value::String(chars[start..end].iter().collect()))
         }),
-        "IndexOf" => native(move |args| {
+        "indexOf" => native(move |args| {
             let sub = expect_string(args.get(0))?;
             match receiver.find(&sub) {
                 Some(idx) => Ok(Value::Number(idx as f64)),
                 None => Ok(Value::Number(-1.0)),
             }
         }),
-        "Join" => native(move |args| {
+        "join" => native(move |args| {
             let arr = expect_array(args.get(0))?;
             let parts: Vec<String> = arr.iter().map(|v| v.as_string()).collect();
             Ok(Value::String(parts.join(&receiver)))
         }),
-        "PadLeft" => native(move |args| {
+        "padLeft" => native(move |args| {
             let total = expect_usize(args.get(0))?;
             let ch = expect_string_opt(args.get(1)).unwrap_or(" ".to_string());
             let pad_char = ch.chars().next().unwrap_or(' ');
@@ -74,7 +74,7 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
             }
             Ok(Value::String(out))
         }),
-        "PadRight" => native(move |args| {
+        "padRight" => native(move |args| {
             let total = expect_usize(args.get(0))?;
             let ch = expect_string_opt(args.get(1)).unwrap_or(" ".to_string());
             let pad_char = ch.chars().next().unwrap_or(' ');
@@ -84,7 +84,7 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
             }
             Ok(Value::String(out))
         }),
-        "Remove" => native(move |args| {
+        "remove" => native(move |args| {
             let start = expect_usize(args.get(0))?;
             let len = expect_usize(args.get(1))?;
             let chars: Vec<char> = receiver.chars().collect();
@@ -95,7 +95,7 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
             out.push_str(&chars[end..].iter().collect::<String>());
             Ok(Value::String(out))
         }),
-        "Slice" => native(move |args| {
+        "slice" => native(move |args| {
             let start = expect_isize(args.get(0))?;
             let end = expect_isize(args.get(1))?;
             let chars: Vec<char> = receiver.chars().collect();
@@ -108,7 +108,7 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
             let e_usize = (e as usize).min(chars.len());
             Ok(Value::String(chars[s as usize..e_usize].iter().collect()))
         }),
-        "RegexMatch" => native(move |args| {
+        "regexMatch" => native(move |args| {
             let pattern = expect_string(args.get(0))?;
             let re = Regex::new(&pattern).map_err(|e| format!("Invalid regex: {e}"))?;
             Ok(Value::Bool(re.is_match(&receiver)))

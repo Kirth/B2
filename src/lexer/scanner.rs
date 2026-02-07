@@ -70,6 +70,7 @@ impl<'a> Scanner<'a> {
             '*' => Ok(Some(self.simple(TokenKind::Star))),
             '/' => Ok(Some(self.simple(TokenKind::Slash))),
             '%' => Ok(Some(self.simple(TokenKind::Percent))),
+            '?' => Ok(Some(self.simple(TokenKind::Question))),
             '_' => Ok(Some(self.simple(TokenKind::Underscore))),
             '|' => {
                 if self.match_char('|') {
@@ -216,6 +217,10 @@ impl<'a> Scanner<'a> {
             "sh" => TokenKind::Sh,
             "ssh" => TokenKind::Ssh,
             "parallel" => TokenKind::Parallel,
+            "task" => TokenKind::Task,
+            "await" => TokenKind::Await,
+            "try" => TokenKind::Try,
+            "catch" => TokenKind::Catch,
             _ => TokenKind::Identifier(text.to_string()),
         };
         Ok(Some(self.token_from(kind)))

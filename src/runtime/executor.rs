@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use crate::parser::ast::{Expr, InterpPart, Pattern, Program, Span, Stmt};
 use crate::runtime::errors::{Frame, RuntimeError};
@@ -15,6 +16,26 @@ pub struct Function {
     pub body: Vec<Stmt>,
     pub captured: HashMap<String, Value>,
     pub name: String,
+}
+
+#[derive(Clone)]
+pub struct TaskHandle {
+    pub state: Arc<Mutex<TaskState>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TaskStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone)]
+pub struct TaskState {
+    pub status: TaskStatus,
+    pub result: Option<Value>,
+    pub error: Option<RuntimeError>,
 }
 
 pub struct Executor {
@@ -144,6 +165,19 @@ impl Executor {
                     }
                 }
                 Ok(ExecResult::Normal)
+            }
+            Stmt::TryCatch { try_block, err_name, catch_block, .. } => {
+                match self.exec_block(try_block) {
+                    Ok(res) => Ok(res),
+                    Err(e) => {
+                        let err_value = self.error_to_value(&e);
+                        self.push_scope();
+                        self.define(err_name, err_value);
+                        let res = self.exec_block(catch_block);
+                        self.pop_scope();
+                        res
+                    }
+                }
             }
             Stmt::Function { name, params, return_type, body, .. } => {
                 let captured = self.flatten_scopes();
@@ -309,6 +343,11 @@ impl Executor {
                 self.eval_unary(op, v, *span)
             }
             Expr::Call { callee, args, span } => {
+                if let Expr::Var { name, .. } = callee.as_ref() {
+                    if self.lookup(name).is_none() {
+                        return Err(self.unknown_global_function_error(name, *span));
+                    }
+                }
                 let c = self.eval_expr(callee)?;
                 let mut a = Vec::new();
                 for arg in args {
@@ -359,6 +398,58 @@ impl Executor {
             }
             Expr::ParallelFor { pattern, iterable, body, .. } => {
                 self.eval_parallel_for_expr(pattern, iterable, body)
+            }
+            Expr::TaskBlock { body, .. } => {
+                let body = body.clone();
+                let captured = self.flatten_scopes();
+                let filename = self.filename.clone();
+                let source = self.source.clone();
+                Ok(self.spawn_task(move || {
+                    let mut exec = Executor {
+                        filename,
+                        source,
+                        scopes: vec![captured],
+                        stack: Vec::new(),
+                        last_span: Span { line: 1, col: 1 },
+                    };
+                    exec.eval_block_expr(&body)
+                }))
+            }
+            Expr::TaskCall { callee, args, .. } => {
+                let callee_value = self.eval_expr(callee)?;
+                let mut arg_values = Vec::new();
+                for arg in args {
+                    arg_values.push(self.eval_expr(arg)?);
+                }
+                let captured = self.flatten_scopes();
+                let filename = self.filename.clone();
+                let source = self.source.clone();
+                Ok(self.spawn_task(move || {
+                    let mut exec = Executor {
+                        filename,
+                        source,
+                        scopes: vec![captured],
+                        stack: Vec::new(),
+                        last_span: Span { line: 1, col: 1 },
+                    };
+                    exec.call_value(callee_value, arg_values)
+                }))
+            }
+            Expr::Await { expr, safe, span } => {
+                let awaited = self.eval_expr(expr)?;
+                match awaited {
+                    Value::Task(task) => {
+                        if *safe {
+                            match self.task_join(&task, *span) {
+                                Ok(v) => Ok(v),
+                                Err(_) => Ok(Value::Null),
+                            }
+                        } else {
+                            self.task_join(&task, *span)
+                        }
+                    }
+                    _ => Err(self.err("await expects task", *span)),
+                }
             }
             Expr::Lambda { params, return_type, body, .. } => {
                 let captured = self.flatten_scopes();
@@ -550,6 +641,70 @@ impl Executor {
         Ok(Value::array(values))
     }
 
+    fn spawn_task<F>(&self, run: F) -> Value
+    where
+        F: FnOnce() -> Result<Value, RuntimeError> + Send + 'static,
+    {
+        let state = Arc::new(Mutex::new(TaskState {
+            status: TaskStatus::Running,
+            result: None,
+            error: None,
+        }));
+        let task = Arc::new(TaskHandle {
+            state: state.clone(),
+        });
+        thread::spawn(move || {
+            let res = run();
+            if let Ok(mut st) = state.lock() {
+                if st.status != TaskStatus::Cancelled {
+                    match &res {
+                        Ok(v) => {
+                            st.status = TaskStatus::Completed;
+                            st.result = Some(v.clone());
+                            st.error = None;
+                        }
+                        Err(e) => {
+                            st.status = TaskStatus::Failed;
+                            st.result = None;
+                            st.error = Some(e.clone());
+                        }
+                    }
+                }
+            }
+        });
+        Value::Task(task)
+    }
+
+    fn task_join(&self, task: &Arc<TaskHandle>, span: Span) -> Result<Value, RuntimeError> {
+        loop {
+            let st = task
+                .state
+                .lock()
+                .map_err(|_| self.err("Task state lock poisoned", span))?;
+            match st.status {
+                TaskStatus::Completed => {
+                    return Ok(st.result.clone().unwrap_or(Value::Null));
+                }
+                TaskStatus::Failed => {
+                    return Err(st
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| self.err("Task failed", span)));
+                }
+                TaskStatus::Cancelled => {
+                    return Err(st
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| self.err("Task cancelled", span)));
+                }
+                TaskStatus::Running => {
+                    drop(st);
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
     fn call(&mut self, callee: Value, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
         match callee {
             Value::NativeFunction(f) => {
@@ -561,7 +716,10 @@ impl Executor {
             Value::Ufcs { name, receiver } => {
                 let mut new_args = vec![*receiver];
                 new_args.extend(args);
-                let target = self.lookup(&name).ok_or_else(|| self.err("Unknown UFCS function", span))?;
+                let recv = new_args[0].clone();
+                let target = self
+                    .lookup(&name)
+                    .ok_or_else(|| self.unknown_method_or_function_error(&name, &recv, span))?;
                 self.call(target, new_args, span)
             }
             Value::Function(func) => {
@@ -644,7 +802,7 @@ impl Executor {
                     if let Some(v) = guard.get(name) {
                         return Ok(v.clone());
                     }
-                    if name == "Count" {
+                    if name == "count" {
                         return Ok(Value::Number(guard.len() as f64));
                     }
                 }
@@ -652,7 +810,7 @@ impl Executor {
             }
             Value::Array(arr) => {
                 match name {
-                    "Add" => {
+                    "add" => {
                         let arr_ref = arr.clone();
                         let func = move |args: Vec<Value>| {
                             let mut list = arr_ref.lock().map_err(|_| "Array lock poisoned".to_string())?;
@@ -660,17 +818,17 @@ impl Executor {
                                 list.push(v.clone());
                                 Ok(Value::Null)
                             } else {
-                                Err("Add expects 1 argument".to_string())
+                                Err("add expects 1 argument".to_string())
                             }
                         };
                         Ok(Value::NativeFunction(Arc::new(func)))
                     }
-                    "Count" => Ok(Value::Number(arr.lock().map(|v| v.len() as f64).unwrap_or(0.0))),
+                    "count" => Ok(Value::Number(arr.lock().map(|v| v.len() as f64).unwrap_or(0.0))),
                     _ => Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::Array(arr)) }),
                 }
             }
             Value::Tuple(tup) => match name {
-                "Count" => Ok(Value::Number(tup.lock().map(|v| v.len() as f64).unwrap_or(0.0))),
+                "count" => Ok(Value::Number(tup.lock().map(|v| v.len() as f64).unwrap_or(0.0))),
                 _ => Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::Tuple(tup)) }),
             },
             Value::String(s) => {
@@ -679,6 +837,56 @@ impl Executor {
                 }
                 Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::String(s)) })
             }
+            Value::Task(task) => match name {
+                "join" => {
+                    let task_ref = task.clone();
+                    Ok(Value::NativeFunctionExec(Arc::new(move |exec, _args, span| {
+                        exec.task_join(&task_ref, span)
+                    })))
+                }
+                "done" => {
+                    let task_ref = task.clone();
+                    Ok(Value::NativeFunctionExec(Arc::new(move |exec, _args, span| {
+                        let done = task_ref
+                            .state
+                            .lock()
+                            .map_err(|_| exec.err("Task state lock poisoned", span))?
+                            .status
+                            != TaskStatus::Running;
+                        Ok(Value::Bool(done))
+                    })))
+                }
+                "cancel" => {
+                    let task_ref = task.clone();
+                    Ok(Value::NativeFunctionExec(Arc::new(move |exec, _args, span| {
+                        let mut state = task_ref
+                            .state
+                            .lock()
+                            .map_err(|_| exec.err("Task state lock poisoned", span))?;
+                        if state.status == TaskStatus::Running {
+                            state.status = TaskStatus::Cancelled;
+                            state.error = Some(exec.err("Task cancelled", span));
+                            return Ok(Value::Bool(true));
+                        }
+                        Ok(Value::Bool(false))
+                    })))
+                }
+                "error" => {
+                    let task_ref = task.clone();
+                    Ok(Value::NativeFunctionExec(Arc::new(move |exec, _args, span| {
+                        let state = task_ref
+                            .state
+                            .lock()
+                            .map_err(|_| exec.err("Task state lock poisoned", span))?;
+                        if let Some(err) = &state.error {
+                            Ok(Value::String(err.message.clone()))
+                        } else {
+                            Ok(Value::Null)
+                        }
+                    })))
+                }
+                _ => Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::Task(task)) }),
+            },
             Value::Number(n) => {
                 if let Some(method) = numbers::get_method(name, n) {
                     return Ok(method);
@@ -827,6 +1035,103 @@ impl Executor {
         caret.push('^');
         Some(format!("  | {}\n  | {}", line, caret))
     }
+
+    fn error_to_value(&self, err: &RuntimeError) -> Value {
+        let mut map = HashMap::new();
+        map.insert("message".to_string(), Value::String(err.message.clone()));
+        map.insert("file".to_string(), Value::String(err.filename.clone()));
+        map.insert("line".to_string(), Value::Number(err.line as f64));
+        map.insert("col".to_string(), Value::Number(err.col as f64));
+
+        let mut stack_vals = Vec::new();
+        for frame in &err.stack {
+            let mut f = HashMap::new();
+            f.insert("name".to_string(), Value::String(frame.name.clone()));
+            f.insert("line".to_string(), Value::Number(frame.line as f64));
+            f.insert("col".to_string(), Value::Number(frame.col as f64));
+            stack_vals.push(Value::Dict(Arc::new(Mutex::new(f))));
+        }
+        map.insert("stack".to_string(), Value::array(stack_vals));
+        Value::Dict(Arc::new(Mutex::new(map)))
+    }
+
+    fn unknown_global_function_error(&self, name: &str, span: Span) -> RuntimeError {
+        let candidates = self.known_global_function_names();
+        let suggestions = suggest_names(name, &candidates);
+        let mut msg = format!("Unknown function '{name}'");
+        if !suggestions.is_empty() {
+            msg.push_str(&format!(". Did you mean: {}", suggestions.join(", ")));
+        }
+        self.err(&msg, span)
+    }
+
+    fn unknown_method_or_function_error(&self, name: &str, receiver: &Value, span: Span) -> RuntimeError {
+        let ty = value_type_str(receiver);
+        let mut candidates = self.known_method_names_for(receiver);
+        candidates.extend(self.known_global_function_names());
+        let suggestions = suggest_names(name, &candidates);
+        let mut msg = format!("Unknown function or method '{name}' on type {ty}");
+        if !suggestions.is_empty() {
+            msg.push_str(&format!(". Did you mean: {}", suggestions.join(", ")));
+        }
+        self.err(&msg, span)
+    }
+
+    fn known_global_function_names(&self) -> Vec<String> {
+        if self.scopes.is_empty() {
+            return Vec::new();
+        }
+        self.scopes[0]
+            .iter()
+            .filter_map(|(k, v)| match v {
+                Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => Some(k.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn known_method_names_for(&self, value: &Value) -> Vec<String> {
+        match value {
+            Value::Task(_) => vec!["join", "done", "cancel", "error"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            Value::Array(_) => vec!["add", "count"].into_iter().map(str::to_string).collect(),
+            Value::Tuple(_) => vec!["count"].into_iter().map(str::to_string).collect(),
+            Value::Dict(_) => vec!["count"].into_iter().map(str::to_string).collect(),
+            Value::String(_) => vec![
+                "length",
+                "toUpper",
+                "toLower",
+                "trim",
+                "split",
+                "lines",
+                "contains",
+                "startsWith",
+                "endsWith",
+                "replace",
+                "substring",
+                "indexOf",
+                "join",
+                "padLeft",
+                "padRight",
+                "remove",
+                "slice",
+                "regexMatch",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            Value::Number(_) => vec![
+                "abs", "floor", "ceil", "round", "min", "max", "clamp", "pow", "sqrt", "toInt", "toFloat",
+                "isInt", "toString",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 enum ExecResult {
@@ -899,6 +1204,7 @@ fn type_matches(ty: &crate::parser::ast::TypeExpr, value: &Value) -> bool {
             "tuple" => matches!(value, Value::Tuple(_)),
             "map" => matches!(value, Value::Dict(_)),
             "range" => matches!(value, Value::Range(_, _)),
+            "task" => matches!(value, Value::Task(_)),
             "fn" => matches!(value, Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_)),
             _ => true,
         },
@@ -950,9 +1256,50 @@ fn value_type_str(value: &Value) -> String {
         Value::Dict(_) => "map".to_string(),
         Value::Range(_, _) => "range".to_string(),
         Value::Duration(_) => "duration".to_string(),
+        Value::Task(_) => "task".to_string(),
         Value::Function(_) => "fn".to_string(),
         Value::NativeFunction(_) => "fn".to_string(),
         Value::NativeFunctionExec(_) => "fn".to_string(),
         Value::Ufcs { .. } => "ufcs".to_string(),
     }
+}
+
+fn suggest_names(target: &str, candidates: &[String]) -> Vec<String> {
+    let target_l = target.to_lowercase();
+    let mut scored: Vec<(usize, String)> = candidates
+        .iter()
+        .filter_map(|c| {
+            let c_l = c.to_lowercase();
+            let score = if c_l == target_l {
+                0
+            } else if c_l.starts_with(&target_l) || target_l.starts_with(&c_l) {
+                1
+            } else if c_l.contains(&target_l) || target_l.contains(&c_l) {
+                2
+            } else {
+                let d = levenshtein(&target_l, &c_l);
+                if d <= 2 { 3 + d } else { return None; }
+            };
+            Some((score, c.clone()))
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    scored.dedup_by(|a, b| a.1 == b.1);
+    scored.into_iter().take(3).map(|(_, s)| s).collect()
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let mut prev: Vec<usize> = (0..=b_bytes.len()).collect();
+    let mut curr: Vec<usize> = vec![0; b_bytes.len() + 1];
+    for (i, &ac) in a_bytes.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, &bc) in b_bytes.iter().enumerate() {
+            let cost = if ac == bc { 0 } else { 1 };
+            curr[j + 1] = (curr[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b_bytes.len()]
 }

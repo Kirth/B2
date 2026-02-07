@@ -73,6 +73,14 @@ impl<'a> Parser<'a> {
         if self.match_kind(&TokenKind::While) {
             return self.parse_while_stmt();
         }
+        if self.match_kind(&TokenKind::Try) {
+            let span = self.prev_span();
+            let try_block = self.parse_block()?;
+            self.consume(&TokenKind::Catch, "Expected 'catch' after try block")?;
+            let err_name = self.consume_identifier("Expected catch variable name")?;
+            let catch_block = self.parse_block()?;
+            return Ok(Stmt::TryCatch { try_block, err_name, catch_block, span });
+        }
         if self.match_kind(&TokenKind::Parallel) {
             return self.parse_parallel_for_stmt();
         }
@@ -252,6 +260,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, String> {
+        if self.match_kind(&TokenKind::Await) {
+            let span = self.prev_span();
+            let safe = self.match_kind(&TokenKind::Question);
+            let expr = self.parse_unary()?;
+            return Ok(Expr::Await { expr: Box::new(expr), safe, span });
+        }
         if self.match_any(&[TokenKind::Bang, TokenKind::Minus]) {
             let op = self.previous_lexeme();
             let span = self.prev_span();
@@ -351,6 +365,23 @@ impl<'a> Parser<'a> {
         }
         if self.match_kind(&TokenKind::Parallel) {
             return self.parse_parallel_for_expr();
+        }
+        if self.match_kind(&TokenKind::Task) {
+            let span = self.prev_span();
+            if self.check(&TokenKind::LBrace) {
+                let body = self.parse_block()?;
+                return Ok(Expr::TaskBlock { body, span });
+            }
+            if self.match_kind(&TokenKind::LParen) {
+                let mut args = self.parse_arguments()?;
+                self.consume(&TokenKind::RParen, "Expected ')' after task arguments")?;
+                if args.is_empty() {
+                    return Err(self.error_at_current("task(...) expects callable as first argument"));
+                }
+                let callee = args.remove(0);
+                return Ok(Expr::TaskCall { callee: Box::new(callee), args, span });
+            }
+            return Err(self.error_at_current("Expected '{' or '(' after 'task'"));
         }
         if self.match_kind(&TokenKind::Fn) {
             let span = self.prev_span();
