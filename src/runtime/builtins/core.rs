@@ -46,6 +46,13 @@ pub fn register(exec: &mut Executor) {
         Ok(Value::Null)
     });
 
+    exec.register_native("getType", |args| {
+        if args.len() != 1 {
+            return Err("getType expects exactly 1 argument".to_string());
+        }
+        Ok(Value::String(value_type_label(&args[0]).to_string()))
+    });
+
     exec.register_native_exec("map", |exec, args, span| {
         let (iterable, func) = expect_two(args, exec, span)?;
         let items = iter_values(iterable, exec, span)?;
@@ -419,5 +426,22 @@ fn type_name(value: &Value) -> &'static str {
         Value::NativeFunction(_) => "NativeFunction",
         Value::NativeFunctionExec(_) => "NativeFunctionExec",
         Value::Ufcs { .. } => "Ufcs",
+    }
+}
+
+fn value_type_label(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "num",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Tuple(_) => "tuple",
+        Value::Dict(_) => "map",
+        Value::Range(_, _) => "range",
+        Value::Duration(_) => "duration",
+        Value::Task(_) => "task",
+        Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "fn",
+        Value::Ufcs { .. } => "ufcs",
     }
 }
