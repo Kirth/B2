@@ -30,6 +30,13 @@ pub struct Program {
 }
 
 #[derive(Debug, Clone)]
+pub struct RecordField {
+    pub name: String,
+    pub ty: TypeExpr,
+    pub default: Option<Expr>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Stmt {
     Expr { expr: Expr, span: Span },
     Let { name: String, expr: Expr, span: Span },
@@ -53,6 +60,8 @@ pub enum Stmt {
     Break { span: Span },
     Throw { value: Expr, span: Span },
     Defer { body: Vec<Stmt>, span: Span },
+    TypeAlias { name: String, target: TypeExpr, span: Span },
+    RecordDef { name: String, fields: Vec<RecordField>, span: Span },
     Invoke { name: String, expr: Expr, span: Span },
 }
 
@@ -134,6 +143,8 @@ impl Stmt {
             | Stmt::Break { span, .. }
             | Stmt::Throw { span, .. }
             | Stmt::Defer { span, .. }
+            | Stmt::TypeAlias { span, .. }
+            | Stmt::RecordDef { span, .. }
             | Stmt::Invoke { span, .. } => *span,
         }
     }

@@ -21,6 +21,8 @@ pub enum TokenKind {
     Task,
     Await,
     Match,
+    Type,
+    Record,
     Try,
     Catch,
     Finally,

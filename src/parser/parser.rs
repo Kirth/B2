@@ -1,6 +1,6 @@
 use crate::lexer::token::{Token, TokenKind};
 use crate::runtime::value::Value;
-use super::ast::{CallArg, Expr, InterpPart, MatchArm, MatchArmKind, ParamSpec, Pattern, Program, Span, Stmt};
+use super::ast::{CallArg, Expr, InterpPart, MatchArm, MatchArmKind, ParamSpec, Pattern, Program, RecordField, Span, Stmt};
 
 pub struct Parser<'a> {
     tokens: Vec<Token>,
@@ -44,6 +44,12 @@ impl<'a> Parser<'a> {
         }
         if self.match_kind(&TokenKind::Fn) {
             return self.parse_function_stmt();
+        }
+        if self.match_kind(&TokenKind::Type) {
+            return self.parse_type_alias_stmt();
+        }
+        if self.match_kind(&TokenKind::Record) {
+            return self.parse_record_stmt();
         }
         if self.match_kind(&TokenKind::Return) {
             let span = self.prev_span();
@@ -170,6 +176,45 @@ impl<'a> Parser<'a> {
         };
         let body = self.parse_block()?;
         Ok(Stmt::Function { name, params, return_type, body, span })
+    }
+
+    fn parse_type_alias_stmt(&mut self) -> Result<Stmt, String> {
+        let span = self.prev_span();
+        let name = self.consume_identifier("Expected type alias name after 'type'")?;
+        self.consume(&TokenKind::Equal, "Expected '=' in type alias")?;
+        let target = self.parse_type()?;
+        Ok(Stmt::TypeAlias { name, target, span })
+    }
+
+    fn parse_record_stmt(&mut self) -> Result<Stmt, String> {
+        let span = self.prev_span();
+        let name = self.consume_identifier("Expected record name after 'record'")?;
+        self.consume(&TokenKind::LBrace, "Expected '{' after record name")?;
+        let mut fields = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            let field_name = self.consume_identifier("Expected record field name")?;
+            self.consume(&TokenKind::Colon, "Expected ':' after record field name")?;
+            let ty = self.parse_type()?;
+            let default = if self.match_kind(&TokenKind::Equal) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            fields.push(RecordField {
+                name: field_name,
+                ty,
+                default,
+            });
+            if self.match_kind(&TokenKind::Comma) || self.match_kind(&TokenKind::Semicolon) {
+                continue;
+            }
+            if self.check(&TokenKind::RBrace) {
+                break;
+            }
+            return Err(self.error_at_current("Expected ',' or '}' after record field"));
+        }
+        self.consume(&TokenKind::RBrace, "Expected '}' after record fields")?;
+        Ok(Stmt::RecordDef { name, fields, span })
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
@@ -322,6 +367,18 @@ impl<'a> Parser<'a> {
     fn parse_postfix(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_primary()?;
         loop {
+            if self.is_record_constructor_start() {
+                if let Expr::Var { .. } = expr {
+                    let span = expr.span();
+                    let args = self.parse_brace_named_args()?;
+                    expr = Expr::Call {
+                        callee: Box::new(expr),
+                        args,
+                        span,
+                    };
+                    continue;
+                }
+            }
             if self.match_kind(&TokenKind::Dot) {
                 let span = self.prev_span();
                 let name = self.consume_identifier("Expected member name after '.'")?;
@@ -351,6 +408,44 @@ impl<'a> Parser<'a> {
             break;
         }
         Ok(expr)
+    }
+
+    fn parse_brace_named_args(&mut self) -> Result<Vec<CallArg>, String> {
+        self.consume(&TokenKind::LBrace, "Expected '{' after type name")?;
+        let mut args = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            let name = self.consume_identifier("Expected field name in record constructor")?;
+            self.consume(&TokenKind::Equal, "Expected '=' after field name")?;
+            let value = self.parse_expression()?;
+            args.push(CallArg::Named { name, value });
+            if self.match_kind(&TokenKind::Comma) {
+                continue;
+            }
+            if self.check(&TokenKind::RBrace) {
+                break;
+            }
+            return Err(self.error_at_current("Expected ',' or '}' in record constructor"));
+        }
+        self.consume(&TokenKind::RBrace, "Expected '}' after record constructor fields")?;
+        Ok(args)
+    }
+
+    fn is_record_constructor_start(&self) -> bool {
+        if !self.check(&TokenKind::LBrace) {
+            return false;
+        }
+        if self.current + 1 >= self.tokens.len() {
+            return false;
+        }
+        // Allow empty constructor braces: TypeName {}
+        if matches!(self.tokens[self.current + 1].kind, TokenKind::RBrace) {
+            return true;
+        }
+        if self.current + 2 >= self.tokens.len() {
+            return false;
+        }
+        matches!(self.tokens[self.current + 1].kind, TokenKind::Identifier(_))
+            && matches!(self.tokens[self.current + 2].kind, TokenKind::Equal)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, String> {

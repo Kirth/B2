@@ -50,7 +50,31 @@ pub fn register(exec: &mut Executor) {
         if args.len() != 1 {
             return Err("getType expects exactly 1 argument".to_string());
         }
-        Ok(Value::String(value_type_label(&args[0]).to_string()))
+        Ok(Value::String(value_type_label(&args[0])))
+    });
+
+    exec.register_native("unwrap", |args| {
+        if args.len() != 1 {
+            return Err("unwrap expects exactly 1 argument".to_string());
+        }
+        match &args[0] {
+            Value::Nominal { inner, .. } => Ok((**inner).clone()),
+            _ => Err("unwrap expects a nominal type value".to_string()),
+        }
+    });
+
+    exec.register_native_exec("validateType", |exec, args, span| {
+        if args.len() != 2 {
+            return Err(exec.make_error("validateType expects (value, typeName)", span));
+        }
+        let type_name = match &args[1] {
+            Value::String(s) => s.clone(),
+            other => other.as_string(),
+        };
+        let ok = exec
+            .validate_type_by_name(&args[0], &type_name)
+            .map_err(|e| exec.make_error(&e, span))?;
+        Ok(Value::Bool(ok))
     });
 
     exec.register_native_exec("map", |exec, args, span| {
@@ -421,6 +445,7 @@ fn type_name(value: &Value) -> &'static str {
         Value::Dict(_) => "Dict",
         Value::Range(_, _) => "Range",
         Value::Duration(_) => "Duration",
+        Value::Nominal { .. } => "Nominal",
         Value::Task(_) => "Task",
         Value::Function(_) => "Function",
         Value::NativeFunction(_) => "NativeFunction",
@@ -429,19 +454,20 @@ fn type_name(value: &Value) -> &'static str {
     }
 }
 
-fn value_type_label(value: &Value) -> &'static str {
+fn value_type_label(value: &Value) -> String {
     match value {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Number(_) => "num",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Tuple(_) => "tuple",
-        Value::Dict(_) => "map",
-        Value::Range(_, _) => "range",
-        Value::Duration(_) => "duration",
-        Value::Task(_) => "task",
-        Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "fn",
-        Value::Ufcs { .. } => "ufcs",
+        Value::Null => "null".to_string(),
+        Value::Bool(_) => "bool".to_string(),
+        Value::Number(_) => "num".to_string(),
+        Value::String(_) => "string".to_string(),
+        Value::Array(_) => "array".to_string(),
+        Value::Tuple(_) => "tuple".to_string(),
+        Value::Dict(_) => "map".to_string(),
+        Value::Range(_, _) => "range".to_string(),
+        Value::Duration(_) => "duration".to_string(),
+        Value::Nominal { name, .. } => format!("type<{name}>"),
+        Value::Task(_) => "task".to_string(),
+        Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "fn".to_string(),
+        Value::Ufcs { .. } => "ufcs".to_string(),
     }
 }

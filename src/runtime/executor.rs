@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use crate::parser::ast::{CallArg, Expr, InterpPart, MatchArmKind, ParamSpec, Pattern, Program, Span, Stmt};
+use crate::parser::ast::{CallArg, Expr, InterpPart, MatchArmKind, ParamSpec, Pattern, Program, RecordField, Span, Stmt, TypeExpr};
 use crate::runtime::errors::{Frame, RuntimeError};
 use crate::runtime::builtins::{numbers, strings};
 use crate::runtime::shell::{sh::run_sh, ssh::run_ssh};
@@ -45,6 +45,11 @@ pub struct TaskState {
     pub error: Option<RuntimeError>,
 }
 
+#[derive(Clone)]
+struct RecordDef {
+    fields: Vec<RecordField>,
+}
+
 pub struct Executor {
     filename: String,
     source: String,
@@ -54,6 +59,8 @@ pub struct Executor {
     last_span: Span,
     output_sink: Option<Arc<dyn Fn(String) + Send + Sync>>,
     loop_depth: usize,
+    type_aliases: HashMap<String, TypeExpr>,
+    record_defs: HashMap<String, RecordDef>,
 }
 
 impl Executor {
@@ -67,6 +74,8 @@ impl Executor {
             last_span: Span { line: 1, col: 1 },
             output_sink: None,
             loop_depth: 0,
+            type_aliases: HashMap::new(),
+            record_defs: HashMap::new(),
         }
     }
 
@@ -338,6 +347,32 @@ impl Executor {
                     Err(self.err("No active scope for defer", stmt.span()))
                 }
             }
+            Stmt::TypeAlias { name, target, span } => {
+                if self.record_defs.contains_key(name) {
+                    return Err(self.err(&format!("Type name '{}' conflicts with existing record", name), *span));
+                }
+                if self.type_aliases.contains_key(name) {
+                    return Err(self.err(&format!("Type '{}' is already defined", name), *span));
+                }
+                self.type_aliases.insert(name.clone(), target.clone());
+                Ok(ExecResult::Normal)
+            }
+            Stmt::RecordDef { name, fields, span } => {
+                if self.type_aliases.contains_key(name) {
+                    return Err(self.err(&format!("Record name '{}' conflicts with existing type alias", name), *span));
+                }
+                let mut seen = std::collections::HashSet::new();
+                for field in fields {
+                    if field.name == "__type" {
+                        return Err(self.err("Record field name '__type' is reserved", *span));
+                    }
+                    if !seen.insert(field.name.clone()) {
+                        return Err(self.err(&format!("Duplicate record field '{}'", field.name), *span));
+                    }
+                }
+                self.record_defs.insert(name.clone(), RecordDef { fields: fields.clone() });
+                Ok(ExecResult::Normal)
+            }
             Stmt::Invoke { name, expr, span } => {
                 let val = self.eval_expr(expr)?;
                 match name.as_str() {
@@ -382,6 +417,8 @@ impl Executor {
         }
 
         let captured = self.flatten_scopes();
+        let type_aliases = self.type_aliases.clone();
+        let record_defs = self.record_defs.clone();
         let pool_size = parallelism_cap();
         let cancel = Arc::new(AtomicBool::new(false));
 
@@ -401,6 +438,8 @@ impl Executor {
             let filename = self.filename.clone();
             let source = self.source.clone();
             let output_sink = self.output_sink.clone();
+            let worker_aliases = type_aliases.clone();
+            let worker_records = record_defs.clone();
 
             let handle = thread::spawn(move || {
                 while !cancel_flag.load(Ordering::Relaxed) {
@@ -423,6 +462,8 @@ impl Executor {
                         last_span: Span { line: 1, col: 1 },
                         output_sink: output_sink.clone(),
                         loop_depth: 0,
+                        type_aliases: worker_aliases.clone(),
+                        record_defs: worker_records.clone(),
                     };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
@@ -499,12 +540,6 @@ impl Executor {
                 self.eval_unary(op, v, *span)
             }
             Expr::Call { callee, args, span } => {
-                if let Expr::Var { name, .. } = callee.as_ref() {
-                    if self.lookup(name).is_none() {
-                        return Err(self.unknown_global_function_error(name, *span));
-                    }
-                }
-                let c = self.eval_expr(callee)?;
                 let mut a = Vec::new();
                 for arg in args {
                     match arg {
@@ -522,6 +557,19 @@ impl Executor {
                         }
                     }
                 }
+                if let Expr::Var { name, .. } = callee.as_ref() {
+                    if let Some(v) = self.lookup(name) {
+                        return self.call(v, a, *span);
+                    }
+                    if self.record_defs.contains_key(name) {
+                        return self.construct_record(name, a, *span);
+                    }
+                    if self.type_aliases.contains_key(name) {
+                        return self.construct_nominal(name, a, *span);
+                    }
+                    return Err(self.unknown_global_function_error(name, *span));
+                }
+                let c = self.eval_expr(callee)?;
                 self.call(c, a, *span)
             }
             Expr::Member { object, name, span } => {
@@ -592,6 +640,8 @@ impl Executor {
             Expr::TaskBlock { body, .. } => {
                 let body = body.clone();
                 let captured = self.flatten_scopes();
+                let type_aliases = self.type_aliases.clone();
+                let record_defs = self.record_defs.clone();
                 let filename = self.filename.clone();
                 let source = self.source.clone();
                 let output_sink = self.output_sink.clone();
@@ -605,6 +655,8 @@ impl Executor {
                         last_span: Span { line: 1, col: 1 },
                         output_sink,
                         loop_depth: 0,
+                        type_aliases,
+                        record_defs,
                     };
                     exec.eval_block_expr(&body)
                 }))
@@ -629,6 +681,8 @@ impl Executor {
                     }
                 }
                 let captured = self.flatten_scopes();
+                let type_aliases = self.type_aliases.clone();
+                let record_defs = self.record_defs.clone();
                 let filename = self.filename.clone();
                 let source = self.source.clone();
                 let output_sink = self.output_sink.clone();
@@ -642,6 +696,8 @@ impl Executor {
                         last_span: Span { line: 1, col: 1 },
                         output_sink,
                         loop_depth: 0,
+                        type_aliases,
+                        record_defs,
                     };
                     exec.call_value(callee_value, arg_values)
                 }))
@@ -762,6 +818,8 @@ impl Executor {
         }
 
         let captured = self.flatten_scopes();
+        let type_aliases = self.type_aliases.clone();
+        let record_defs = self.record_defs.clone();
         let pool_size = parallelism_cap();
         let cancel = Arc::new(AtomicBool::new(false));
 
@@ -782,6 +840,8 @@ impl Executor {
             let filename = self.filename.clone();
             let source = self.source.clone();
             let output_sink = self.output_sink.clone();
+            let worker_aliases = type_aliases.clone();
+            let worker_records = record_defs.clone();
 
             let handle = thread::spawn(move || {
                 while !cancel_flag.load(Ordering::Relaxed) {
@@ -805,6 +865,8 @@ impl Executor {
                         last_span: Span { line: 1, col: 1 },
                         output_sink: output_sink.clone(),
                         loop_depth: 0,
+                        type_aliases: worker_aliases.clone(),
+                        record_defs: worker_records.clone(),
                     };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
@@ -1046,13 +1108,13 @@ impl Executor {
                     while positional_index < positional.len() {
                         let v = positional[positional_index].clone();
                         if let Some(t) = &param.ty {
-                            if !type_matches(t, &v) {
+                            if !self.type_matches_checked(t, &v, span)? {
                                 return Err(self.err(
                                     &format!(
                                         "Type mismatch for variadic {}.{}: expected {}, got {}",
                                         func.name,
                                         param.name,
-                                        type_str(t),
+                                        self.type_str(t),
                                         value_type_str(&v)
                                     ),
                                     span,
@@ -1091,13 +1153,13 @@ impl Executor {
                 };
 
                 if let Some(t) = &param.ty {
-                    if !type_matches(t, &value) {
+                    if !self.type_matches_checked(t, &value, span)? {
                         return Err(self.err(
                             &format!(
                                 "Type mismatch for {}.{}: expected {}, got {}",
                                 func.name,
                                 param.name,
-                                type_str(t),
+                                self.type_str(t),
                                 value_type_str(&value)
                             ),
                             span,
@@ -1140,12 +1202,12 @@ impl Executor {
                 }
             };
             if let Some(t) = &func.return_type {
-                if !type_matches(t, &out) {
+                if !self.type_matches_checked(t, &out, span)? {
                     return Err(self.err(
                         &format!(
                             "Return type mismatch for {}: expected {}, got {}",
                             func.name,
-                            type_str(t),
+                            self.type_str(t),
                             value_type_str(&out)
                         ),
                         span,
@@ -1177,6 +1239,148 @@ impl Executor {
             Value::Tuple(tup) => Ok(tup.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())),
             _ => Err(self.err("Spread argument expects array or tuple", span)),
         }
+    }
+
+    fn construct_record(&mut self, record_name: &str, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
+        let def = self
+            .record_defs
+            .get(record_name)
+            .cloned()
+            .ok_or_else(|| self.err(&format!("Unknown record '{}'", record_name), span))?;
+
+        let mut provided = HashMap::<String, Value>::new();
+        for arg in args {
+            match arg {
+                RuntimeCallArg::Named { name, value } => {
+                    if provided.insert(name.clone(), value).is_some() {
+                        return Err(self.err(&format!("Duplicate record field '{}'", name), span));
+                    }
+                }
+                RuntimeCallArg::Positional(_) | RuntimeCallArg::Spread(_) => {
+                    return Err(self.err(
+                        &format!("Record constructor {}(...) expects named arguments only", record_name),
+                        span,
+                    ));
+                }
+            }
+        }
+
+        self.push_scope();
+        let mut map = HashMap::<String, Value>::new();
+        map.insert("__type".to_string(), Value::String(record_name.to_string()));
+
+        let mut pending: Result<Value, RuntimeError> = Ok(Value::Null);
+        for field in &def.fields {
+            let val = if let Some(v) = provided.remove(&field.name) {
+                v
+            } else if let Some(default) = &field.default {
+                self.eval_expr(default)?
+            } else {
+                pending = Err(self.err(
+                    &format!("Record '{}' missing required field '{}'", record_name, field.name),
+                    span,
+                ));
+                break;
+            };
+
+            if !self.type_matches_checked(&field.ty, &val, span)? {
+                pending = Err(self.err(
+                    &format!(
+                        "Type mismatch for {}.{}: expected {}, got {}",
+                        record_name,
+                        field.name,
+                        self.type_str(&field.ty),
+                        value_type_str(&val)
+                    ),
+                    span,
+                ));
+                break;
+            }
+            self.define(&field.name, val.clone());
+            map.insert(field.name.clone(), val);
+        }
+
+        if pending.is_ok() {
+            if let Some((unknown, _)) = provided.iter().next() {
+                pending = Err(self.err(
+                    &format!("Record '{}' has unknown field '{}'", record_name, unknown),
+                    span,
+                ));
+            } else {
+                pending = Ok(Value::Dict(Arc::new(Mutex::new(map))));
+            }
+        }
+
+        let scope_out = match pending {
+            Ok(v) => {
+                self.exit_scope(Ok(ExecResult::Normal))?;
+                Ok(v)
+            }
+            Err(e) => match self.exit_scope(Err(e)) {
+                Ok(_) => Ok(Value::Null),
+                Err(e2) => Err(e2),
+            },
+        }?;
+        Ok(scope_out)
+    }
+
+    fn construct_nominal(&mut self, type_name: &str, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
+        let base = self
+            .type_aliases
+            .get(type_name)
+            .cloned()
+            .ok_or_else(|| self.err(&format!("Unknown type '{}'", type_name), span))?;
+
+        if args.len() != 1 {
+            return Err(self.err(
+                &format!("Type constructor {}(...) expects exactly 1 positional argument", type_name),
+                span,
+            ));
+        }
+        let value = match args.into_iter().next().unwrap() {
+            RuntimeCallArg::Positional(v) => v,
+            RuntimeCallArg::Spread(_) | RuntimeCallArg::Named { .. } => {
+                return Err(self.err(
+                    &format!("Type constructor {}(...) expects exactly 1 positional argument", type_name),
+                    span,
+                ));
+            }
+        };
+
+        if !self.type_matches_checked(&base, &value, span)? {
+            return Err(self.err(
+                &format!(
+                    "Type constructor {} expects {}, got {}",
+                    type_name,
+                    self.type_str(&base),
+                    value_type_str(&value)
+                ),
+                span,
+            ));
+        }
+
+        Ok(Value::Nominal {
+            name: type_name.to_string(),
+            inner: Box::new(value),
+        })
+    }
+
+    fn type_str(&self, ty: &TypeExpr) -> String {
+        type_str(ty)
+    }
+
+    fn type_matches_checked(&self, ty: &TypeExpr, value: &Value, span: Span) -> Result<bool, RuntimeError> {
+        type_matches_with_resolver(ty, value, &self.type_aliases, &self.record_defs)
+            .map_err(|e| self.err(&e, span))
+    }
+
+    pub fn validate_type_by_name(&self, value: &Value, type_name: &str) -> Result<bool, String> {
+        type_matches_with_resolver(
+            &TypeExpr::Simple(type_name.to_string()),
+            value,
+            &self.type_aliases,
+            &self.record_defs,
+        )
     }
 
     fn eval_binary(&self, l: Value, op: &str, r: Value, span: Span) -> Result<Value, RuntimeError> {
@@ -1517,13 +1721,16 @@ impl Executor {
         if self.scopes.is_empty() {
             return Vec::new();
         }
-        self.scopes[0]
+        let mut names: Vec<String> = self.scopes[0]
             .iter()
             .filter_map(|(k, v)| match v {
                 Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => Some(k.clone()),
                 _ => None,
             })
-            .collect()
+            .collect();
+        names.extend(self.record_defs.keys().cloned());
+        names.extend(self.type_aliases.keys().cloned());
+        names
     }
 
     fn known_method_names_for(&self, value: &Value) -> Vec<String> {
@@ -1632,55 +1839,107 @@ fn type_str(ty: &crate::parser::ast::TypeExpr) -> String {
     }
 }
 
-fn type_matches(ty: &crate::parser::ast::TypeExpr, value: &Value) -> bool {
+fn type_matches_with_resolver(
+    ty: &crate::parser::ast::TypeExpr,
+    value: &Value,
+    type_aliases: &HashMap<String, TypeExpr>,
+    record_defs: &HashMap<String, RecordDef>,
+) -> Result<bool, String> {
     use crate::parser::ast::TypeExpr as T;
     match ty {
         T::Simple(s) => match s.as_str() {
-            "num" => matches!(value, Value::Number(_)),
-            "string" => matches!(value, Value::String(_)),
-            "bool" => matches!(value, Value::Bool(_)),
-            "array" => matches!(value, Value::Array(_)),
-            "tuple" => matches!(value, Value::Tuple(_)),
-            "map" => matches!(value, Value::Dict(_)),
-            "range" => matches!(value, Value::Range(_, _)),
-            "task" => matches!(value, Value::Task(_)),
-            "fn" => matches!(value, Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_)),
-            _ => true,
+            "num" => Ok(matches!(value, Value::Number(_))),
+            "string" => Ok(matches!(value, Value::String(_))),
+            "bool" => Ok(matches!(value, Value::Bool(_))),
+            "array" => Ok(matches!(value, Value::Array(_))),
+            "tuple" => Ok(matches!(value, Value::Tuple(_))),
+            "map" => Ok(matches!(value, Value::Dict(_))),
+            "range" => Ok(matches!(value, Value::Range(_, _))),
+            "task" => Ok(matches!(value, Value::Task(_))),
+            "fn" => Ok(matches!(value, Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_))),
+            other => {
+                if record_defs.contains_key(other) {
+                    return Ok(record_type_name(value).as_deref() == Some(other));
+                }
+                if type_aliases.contains_key(other) {
+                    return Ok(matches!(
+                        value,
+                        Value::Nominal { name, .. } if name == other
+                    ));
+                }
+                Err(format!("Unknown type '{}'", other))
+            }
         },
         T::Array(inner) => match value {
-            Value::Array(arr) => arr.lock().map(|items| items.iter().all(|v| type_matches(inner, v))).unwrap_or(true),
-            _ => false,
+            Value::Array(arr) => {
+                let items = arr.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new());
+                for item in &items {
+                    if !type_matches_with_resolver(inner, item, type_aliases, record_defs)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
         },
         T::Tuple(types) => match value {
-            Value::Tuple(tup) => tup
-                .lock()
-                .map(|items| {
-                    items.len() == types.len()
-                        && items
-                            .iter()
-                            .zip(types.iter())
-                            .all(|(v, t)| type_matches(t, v))
-                })
-                .unwrap_or(true),
-            _ => false,
+            Value::Tuple(tup) => {
+                let items = tup.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new());
+                if items.len() != types.len() {
+                    return Ok(false);
+                }
+                for (item, ty) in items.iter().zip(types.iter()) {
+                    if !type_matches_with_resolver(ty, item, type_aliases, record_defs)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
         },
         T::Map(k, v) => match value {
             Value::Dict(map) => {
-                map.lock().map(|items| {
-                    items.iter().all(|(key, val)| {
-                        let key_val = Value::String(key.clone());
-                        type_matches(k, &key_val) && type_matches(v, val)
-                    })
-                }).unwrap_or(true)
+                let items = map.lock().map(|m| m.clone()).unwrap_or_else(|_| HashMap::new());
+                for (key, val) in items {
+                    let key_val = Value::String(key);
+                    if !type_matches_with_resolver(k, &key_val, type_aliases, record_defs)? {
+                        return Ok(false);
+                    }
+                    if !type_matches_with_resolver(v, &val, type_aliases, record_defs)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             }
-            _ => false,
+            _ => Ok(false),
         },
         T::Range(inner) => match value {
-            Value::Range(_, _) => type_matches(inner, &Value::Number(0.0)),
-            _ => false,
+            Value::Range(_, _) => type_matches_with_resolver(inner, &Value::Number(0.0), type_aliases, record_defs),
+            _ => Ok(false),
         },
-        T::Fn(_) => matches!(value, Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_)),
-        T::Union(items) => items.iter().any(|t| type_matches(t, value)),
+        T::Fn(_) => Ok(matches!(value, Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_))),
+        T::Union(items) => {
+            for ty in items {
+                if type_matches_with_resolver(ty, value, type_aliases, record_defs)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn record_type_name(value: &Value) -> Option<String> {
+    match value {
+        Value::Dict(map) => map
+            .lock()
+            .ok()
+            .and_then(|m| m.get("__type").cloned())
+            .and_then(|v| match v {
+                Value::String(s) => Some(s),
+                _ => None,
+            }),
+        _ => None,
     }
 }
 
@@ -1695,6 +1954,7 @@ fn value_type_str(value: &Value) -> String {
         Value::Dict(_) => "map".to_string(),
         Value::Range(_, _) => "range".to_string(),
         Value::Duration(_) => "duration".to_string(),
+        Value::Nominal { name, .. } => format!("type<{name}>"),
         Value::Task(_) => "task".to_string(),
         Value::Function(_) => "fn".to_string(),
         Value::NativeFunction(_) => "fn".to_string(),

@@ -229,6 +229,8 @@ impl<'a> Scanner<'a> {
             "task" => TokenKind::Task,
             "await" => TokenKind::Await,
             "match" => TokenKind::Match,
+            "type" => TokenKind::Type,
+            "record" => TokenKind::Record,
             "try" => TokenKind::Try,
             "catch" => TokenKind::Catch,
             "finally" => TokenKind::Finally,

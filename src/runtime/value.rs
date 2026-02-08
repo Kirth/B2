@@ -16,6 +16,7 @@ pub enum Value {
     Dict(Arc<Mutex<HashMap<String, Value>>>),
     Range(i64, i64),
     Duration(Duration),
+    Nominal { name: String, inner: Box<Value> },
     Task(Arc<TaskHandle>),
     Function(Arc<Function>),
     NativeFunction(Arc<dyn Fn(Vec<Value>) -> Result<Value, String> + Send + Sync>),
@@ -62,6 +63,7 @@ impl Value {
             Value::Dict(d) => !d.lock().map(|v| v.is_empty()).unwrap_or(true),
             Value::Range(_, _) => true,
             Value::Duration(d) => d.as_millis() != 0,
+            Value::Nominal { inner, .. } => inner.is_truthy(),
             Value::Task(_) => true,
             Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) | Value::Ufcs { .. } => true,
         }
@@ -94,6 +96,7 @@ impl Value {
             }
             Value::Range(a, b) => format!("{}..{}", a, b),
             Value::Duration(d) => format!("{}ms", d.as_millis()),
+            Value::Nominal { name, inner } => format!("{name}({})", inner.as_string()),
             Value::Task(_) => "<task>".to_string(),
             Value::Function(_) => "<fn>".to_string(),
             Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "<native fn>".to_string(),
