@@ -1,6 +1,6 @@
 use crate::lexer::token::{Token, TokenKind};
 use crate::runtime::value::Value;
-use super::ast::{CallArg, Expr, InterpPart, MatchArm, MatchArmKind, ParamSpec, Pattern, Program, RecordField, Span, Stmt};
+use super::ast::{CallArg, Expr, ImportItem, ImportSource, InterpPart, MatchArm, MatchArmKind, ParamSpec, Pattern, Program, RecordField, Span, Stmt};
 
 pub struct Parser<'a> {
     tokens: Vec<Token>,
@@ -108,6 +108,12 @@ impl<'a> Parser<'a> {
             let span = self.prev_span();
             let body = self.parse_block()?;
             return Ok(Stmt::Defer { body, span });
+        }
+        if self.match_kind(&TokenKind::Use) {
+            return self.parse_use_stmt();
+        }
+        if self.match_kind(&TokenKind::Import) {
+            return self.parse_import_stmt();
         }
         if self.match_kind(&TokenKind::If) {
             return self.parse_if_stmt();
@@ -298,6 +304,84 @@ impl<'a> Parser<'a> {
         Ok(Stmt::While { cond, body, span })
     }
 
+    fn parse_use_stmt(&mut self) -> Result<Stmt, String> {
+        let span = self.prev_span();
+        let module = self.consume_identifier("Expected builtin module name after 'use'")?;
+        let alias = if self.match_kind(&TokenKind::As) {
+            Some(self.consume_identifier("Expected alias name after 'as'")?)
+        } else {
+            None
+        };
+        Ok(Stmt::Use { module, alias, span })
+    }
+
+    fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
+        let span = self.prev_span();
+        if self.match_kind(&TokenKind::Star) {
+            self.consume(&TokenKind::As, "Expected 'as' after '*' in import")?;
+            let alias = self.consume_identifier("Expected alias name after 'as'")?;
+            self.consume(&TokenKind::From, "Expected 'from' in import statement")?;
+            let source = self.parse_import_source()?;
+            return Ok(Stmt::ImportNamespace { alias, source, span });
+        }
+
+        if self.match_kind(&TokenKind::LBrace) {
+            let items = self.parse_import_items()?;
+            self.consume(&TokenKind::From, "Expected 'from' in import statement")?;
+            let source = self.parse_import_source()?;
+            return Ok(Stmt::ImportNamed { items, source, span });
+        }
+
+        let name = self.consume_identifier("Expected imported symbol after 'import'")?;
+        let alias = if self.match_kind(&TokenKind::As) {
+            Some(self.consume_identifier("Expected alias name after 'as'")?)
+        } else {
+            None
+        };
+        self.consume(&TokenKind::From, "Expected 'from' in import statement")?;
+        let source = self.parse_import_source()?;
+        Ok(Stmt::ImportNamed {
+            items: vec![ImportItem { name, alias }],
+            source,
+            span,
+        })
+    }
+
+    fn parse_import_items(&mut self) -> Result<Vec<ImportItem>, String> {
+        let mut items = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            let name = self.consume_identifier("Expected imported symbol in import list")?;
+            let alias = if self.match_kind(&TokenKind::As) {
+                Some(self.consume_identifier("Expected alias name after 'as'")?)
+            } else {
+                None
+            };
+            items.push(ImportItem { name, alias });
+            if !self.match_kind(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.consume(&TokenKind::RBrace, "Expected '}' after import list")?;
+        if items.is_empty() {
+            return Err(self.error_at_current("Expected at least one symbol in import list"));
+        }
+        Ok(items)
+    }
+
+    fn parse_import_source(&mut self) -> Result<ImportSource, String> {
+        if self.match_kind(&TokenKind::Identifier(String::new())) {
+            if let TokenKind::Identifier(name) = self.previous().kind.clone() {
+                return Ok(ImportSource::Builtin(name));
+            }
+        }
+        if self.match_kind(&TokenKind::String(String::new())) {
+            if let TokenKind::String(path) = self.previous().kind.clone() {
+                return Ok(ImportSource::Path(path));
+            }
+        }
+        Err(self.error_at_current("Expected import source (builtin module name or string path)"))
+    }
+
     fn parse_expression(&mut self) -> Result<Expr, String> {
         self.parse_or()
     }
@@ -403,6 +487,12 @@ impl<'a> Parser<'a> {
                 let span = self.prev_span();
                 let name = self.consume_identifier("Expected member name after '.'")?;
                 expr = Expr::Member { object: Box::new(expr), name, span };
+                continue;
+            }
+            if self.match_kind(&TokenKind::ColonColon) {
+                let span = self.prev_span();
+                let name = self.consume_identifier("Expected namespace member after '::'")?;
+                expr = Expr::NamespaceMember { object: Box::new(expr), name, span };
                 continue;
             }
             if self.match_kind(&TokenKind::LParen) {
@@ -1234,6 +1324,9 @@ fn stmt_contains_yield(stmt: &Stmt) -> bool {
         Stmt::Return { value: None, .. }
         | Stmt::Continue { .. }
         | Stmt::Break { .. }
+        | Stmt::Use { .. }
+        | Stmt::ImportNamed { .. }
+        | Stmt::ImportNamespace { .. }
         | Stmt::TypeAlias { .. }
         | Stmt::RecordDef { .. }
         | Stmt::Function { .. } => false,
@@ -1251,7 +1344,7 @@ fn expr_contains_yield(expr: &Expr) -> bool {
                     CallArg::Named { value, .. } => expr_contains_yield(value),
                 })
         }
-        Expr::Member { object, .. } => expr_contains_yield(object),
+        Expr::Member { object, .. } | Expr::NamespaceMember { object, .. } => expr_contains_yield(object),
         Expr::Index { object, index, .. } => expr_contains_yield(object) || expr_contains_yield(index),
         Expr::Array { items, .. } | Expr::Tuple { items, .. } => {
             items.iter().any(expr_contains_yield)

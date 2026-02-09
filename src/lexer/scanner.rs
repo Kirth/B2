@@ -50,7 +50,13 @@ impl<'a> Scanner<'a> {
             '[' => Ok(Some(self.simple(TokenKind::LBracket))),
             ']' => Ok(Some(self.simple(TokenKind::RBracket))),
             ',' => Ok(Some(self.simple(TokenKind::Comma))),
-            ':' => Ok(Some(self.simple(TokenKind::Colon))),
+            ':' => {
+                if self.match_char(':') {
+                    Ok(Some(self.simple(TokenKind::ColonColon)))
+                } else {
+                    Ok(Some(self.simple(TokenKind::Colon)))
+                }
+            }
             ';' => Ok(Some(self.simple(TokenKind::Semicolon))),
             '.' => {
                 if self.match_char('.') {
@@ -236,6 +242,10 @@ impl<'a> Scanner<'a> {
             "catch" => TokenKind::Catch,
             "finally" => TokenKind::Finally,
             "defer" => TokenKind::Defer,
+            "use" => TokenKind::Use,
+            "import" => TokenKind::Import,
+            "from" => TokenKind::From,
+            "as" => TokenKind::As,
             _ => TokenKind::Identifier(text.to_string()),
         };
         Ok(Some(self.token_from(kind)))

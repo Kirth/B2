@@ -6,6 +6,19 @@ use std::time::Duration;
 use super::executor::{Function, GeneratorHandle, TaskHandle};
 
 #[derive(Clone)]
+pub enum ModuleOrigin {
+    Builtin,
+    Script(String),
+}
+
+#[derive(Clone)]
+pub struct ModuleValue {
+    pub name: String,
+    pub exports: HashMap<String, Value>,
+    pub origin: ModuleOrigin,
+}
+
+#[derive(Clone)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -20,6 +33,7 @@ pub enum Value {
     Task(Arc<TaskHandle>),
     Generator(Arc<GeneratorHandle>),
     Function(Arc<Function>),
+    Module(Arc<ModuleValue>),
     NativeFunction(Arc<dyn Fn(Vec<Value>) -> Result<Value, String> + Send + Sync>),
     NativeFunctionExec(Arc<dyn Fn(&mut crate::runtime::executor::Executor, Vec<Value>, crate::parser::ast::Span) -> Result<Value, crate::runtime::errors::RuntimeError> + Send + Sync>),
     Ufcs { name: String, receiver: Box<Value> },
@@ -67,7 +81,7 @@ impl Value {
             Value::Nominal { inner, .. } => inner.is_truthy(),
             Value::Task(_) => true,
             Value::Generator(_) => true,
-            Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) | Value::Ufcs { .. } => true,
+            Value::Function(_) | Value::Module(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) | Value::Ufcs { .. } => true,
         }
     }
 
@@ -102,6 +116,13 @@ impl Value {
             Value::Task(_) => "<task>".to_string(),
             Value::Generator(_) => "<generator>".to_string(),
             Value::Function(_) => "<fn>".to_string(),
+            Value::Module(module) => {
+                let origin = match &module.origin {
+                    ModuleOrigin::Builtin => "builtin".to_string(),
+                    ModuleOrigin::Script(path) => format!("script:{path}"),
+                };
+                format!("<module {} ({origin})>", module.name)
+            }
             Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "<native fn>".to_string(),
             Value::Ufcs { name, .. } => format!("<ufcs {}>", name),
         }

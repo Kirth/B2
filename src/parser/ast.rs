@@ -37,6 +37,18 @@ pub struct RecordField {
 }
 
 #[derive(Debug, Clone)]
+pub struct ImportItem {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportSource {
+    Builtin(String),
+    Path(String),
+}
+
+#[derive(Debug, Clone)]
 pub enum Stmt {
     Expr { expr: Expr, span: Span },
     Let { name: String, expr: Expr, span: Span },
@@ -68,6 +80,9 @@ pub enum Stmt {
     Break { span: Span },
     Throw { value: Expr, span: Span },
     Defer { body: Vec<Stmt>, span: Span },
+    Use { module: String, alias: Option<String>, span: Span },
+    ImportNamed { items: Vec<ImportItem>, source: ImportSource, span: Span },
+    ImportNamespace { alias: String, source: ImportSource, span: Span },
     TypeAlias { name: String, target: TypeExpr, span: Span },
     RecordDef { name: String, fields: Vec<RecordField>, span: Span },
     Invoke { name: String, expr: Expr, span: Span },
@@ -81,6 +96,7 @@ pub enum Expr {
     Unary { op: String, expr: Box<Expr>, span: Span },
     Call { callee: Box<Expr>, args: Vec<CallArg>, span: Span },
     Member { object: Box<Expr>, name: String, span: Span },
+    NamespaceMember { object: Box<Expr>, name: String, span: Span },
     Index { object: Box<Expr>, index: Box<Expr>, span: Span },
     Array { items: Vec<Expr>, span: Span },
     Tuple { items: Vec<Expr>, span: Span },
@@ -159,6 +175,9 @@ impl Stmt {
             | Stmt::Break { span, .. }
             | Stmt::Throw { span, .. }
             | Stmt::Defer { span, .. }
+            | Stmt::Use { span, .. }
+            | Stmt::ImportNamed { span, .. }
+            | Stmt::ImportNamespace { span, .. }
             | Stmt::TypeAlias { span, .. }
             | Stmt::RecordDef { span, .. }
             | Stmt::Invoke { span, .. } => *span,
@@ -175,6 +194,7 @@ impl Expr {
             | Expr::Unary { span, .. }
             | Expr::Call { span, .. }
             | Expr::Member { span, .. }
+            | Expr::NamespaceMember { span, .. }
             | Expr::Index { span, .. }
             | Expr::Array { span, .. }
             | Expr::Tuple { span, .. }

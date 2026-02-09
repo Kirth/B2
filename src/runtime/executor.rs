@@ -1,13 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use crate::parser::ast::{CallArg, Expr, InterpPart, MatchArmKind, ParamSpec, Pattern, Program, RecordField, Span, Stmt, TypeExpr};
+use crate::lexer::scanner::Scanner;
+use crate::parser::ast::{CallArg, Expr, ImportSource, InterpPart, MatchArmKind, ParamSpec, Pattern, Program, RecordField, Span, Stmt, TypeExpr};
+use crate::parser::parser::Parser;
 use crate::runtime::errors::{Frame, RuntimeError};
 use crate::runtime::builtins::{numbers, strings};
 use crate::runtime::shell::{sh::run_sh, ssh::run_ssh};
-use crate::runtime::value::Value;
+use crate::runtime::value::{ModuleOrigin, ModuleValue, Value};
 
 #[derive(Clone)]
 pub struct Function {
@@ -73,6 +77,12 @@ struct RecordDef {
     fields: Vec<RecordField>,
 }
 
+#[derive(Clone)]
+enum ModuleLoadState {
+    Loading,
+    Ready(Arc<ModuleValue>),
+}
+
 pub struct Executor {
     filename: String,
     source: String,
@@ -85,6 +95,10 @@ pub struct Executor {
     type_aliases: HashMap<String, TypeExpr>,
     record_defs: HashMap<String, RecordDef>,
     generator_ctx: Option<GeneratorYieldContext>,
+    module_cache: Arc<Mutex<HashMap<String, ModuleLoadState>>>,
+    loading_stack: Vec<String>,
+    builtin_modules: HashMap<String, Arc<ModuleValue>>,
+    prelude_names: HashSet<String>,
 }
 
 impl Executor {
@@ -101,6 +115,10 @@ impl Executor {
             type_aliases: HashMap::new(),
             record_defs: HashMap::new(),
             generator_ctx: None,
+            module_cache: Arc::new(Mutex::new(HashMap::new())),
+            loading_stack: Vec::new(),
+            builtin_modules: HashMap::new(),
+            prelude_names: HashSet::new(),
         }
     }
 
@@ -136,8 +154,31 @@ impl Executor {
         );
     }
 
+    #[allow(dead_code)]
     pub fn register_value(&mut self, name: &str, value: Value) {
         self.scopes[0].insert(name.to_string(), value);
+    }
+
+    pub fn register_builtin_module(&mut self, name: &str, exports: HashMap<String, Value>) {
+        let module = Arc::new(ModuleValue {
+            name: name.to_string(),
+            exports,
+            origin: ModuleOrigin::Builtin,
+        });
+        self.builtin_modules.insert(name.to_string(), module.clone());
+        self.scopes[0].insert(name.to_string(), Value::Module(module.clone()));
+        if let Ok(mut cache) = self.module_cache.lock() {
+            cache.insert(
+                format!("builtin:{name}"),
+                ModuleLoadState::Ready(module),
+            );
+        }
+    }
+
+    pub fn freeze_prelude(&mut self) {
+        if let Some(global) = self.scopes.first() {
+            self.prelude_names = global.keys().cloned().collect();
+        }
     }
 
     pub fn execute(&mut self, program: &Program) -> Result<(), RuntimeError> {
@@ -398,6 +439,18 @@ impl Executor {
                     Err(self.err("No active scope for defer", stmt.span()))
                 }
             }
+            Stmt::Use { module, alias, span } => {
+                self.exec_use(module, alias.as_deref(), *span)?;
+                Ok(ExecResult::Normal)
+            }
+            Stmt::ImportNamed { items, source, span } => {
+                self.exec_import_named(items, source, *span)?;
+                Ok(ExecResult::Normal)
+            }
+            Stmt::ImportNamespace { alias, source, span } => {
+                self.exec_import_namespace(alias, source, *span)?;
+                Ok(ExecResult::Normal)
+            }
             Stmt::TypeAlias { name, target, span } => {
                 if self.record_defs.contains_key(name) {
                     return Err(self.err(&format!("Type name '{}' conflicts with existing record", name), *span));
@@ -470,6 +523,9 @@ impl Executor {
         let captured = self.flatten_scopes();
         let type_aliases = self.type_aliases.clone();
         let record_defs = self.record_defs.clone();
+        let module_cache = self.module_cache.clone();
+        let builtin_modules = self.builtin_modules.clone();
+        let prelude_names = self.prelude_names.clone();
         let pool_size = parallelism_cap();
         let cancel = Arc::new(AtomicBool::new(false));
 
@@ -491,6 +547,9 @@ impl Executor {
             let output_sink = self.output_sink.clone();
             let worker_aliases = type_aliases.clone();
             let worker_records = record_defs.clone();
+            let worker_module_cache = module_cache.clone();
+            let worker_builtin_modules = builtin_modules.clone();
+            let worker_prelude_names = prelude_names.clone();
 
             let handle = thread::spawn(move || {
                 while !cancel_flag.load(Ordering::Relaxed) {
@@ -516,6 +575,10 @@ impl Executor {
                         type_aliases: worker_aliases.clone(),
                         record_defs: worker_records.clone(),
                         generator_ctx: None,
+                        module_cache: worker_module_cache.clone(),
+                        loading_stack: Vec::new(),
+                        builtin_modules: worker_builtin_modules.clone(),
+                        prelude_names: worker_prelude_names.clone(),
                     };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
@@ -628,6 +691,10 @@ impl Executor {
                 let obj = self.eval_expr(object)?;
                 self.member_access(obj, name, *span)
             }
+            Expr::NamespaceMember { object, name, span } => {
+                let obj = self.eval_expr(object)?;
+                self.namespace_access(obj, name, *span)
+            }
             Expr::Index { object, index, span } => {
                 let obj = self.eval_expr(object)?;
                 let idx = self.eval_expr(index)?;
@@ -727,6 +794,10 @@ impl Executor {
                 let filename = self.filename.clone();
                 let source = self.source.clone();
                 let output_sink = self.output_sink.clone();
+                let module_cache = self.module_cache.clone();
+                let loading_stack = self.loading_stack.clone();
+                let builtin_modules = self.builtin_modules.clone();
+                let prelude_names = self.prelude_names.clone();
                 Ok(self.spawn_task(move || {
                     let mut exec = Executor {
                         filename,
@@ -740,6 +811,10 @@ impl Executor {
                         type_aliases,
                         record_defs,
                         generator_ctx: None,
+                        module_cache,
+                        loading_stack,
+                        builtin_modules,
+                        prelude_names,
                     };
                     exec.eval_block_expr(&body)
                 }))
@@ -769,6 +844,10 @@ impl Executor {
                 let filename = self.filename.clone();
                 let source = self.source.clone();
                 let output_sink = self.output_sink.clone();
+                let module_cache = self.module_cache.clone();
+                let loading_stack = self.loading_stack.clone();
+                let builtin_modules = self.builtin_modules.clone();
+                let prelude_names = self.prelude_names.clone();
                 Ok(self.spawn_task(move || {
                     let mut exec = Executor {
                         filename,
@@ -782,6 +861,10 @@ impl Executor {
                         type_aliases,
                         record_defs,
                         generator_ctx: None,
+                        module_cache,
+                        loading_stack,
+                        builtin_modules,
+                        prelude_names,
                     };
                     exec.call_value(callee_value, arg_values)
                 }))
@@ -905,6 +988,9 @@ impl Executor {
         let captured = self.flatten_scopes();
         let type_aliases = self.type_aliases.clone();
         let record_defs = self.record_defs.clone();
+        let module_cache = self.module_cache.clone();
+        let builtin_modules = self.builtin_modules.clone();
+        let prelude_names = self.prelude_names.clone();
         let pool_size = parallelism_cap();
         let cancel = Arc::new(AtomicBool::new(false));
 
@@ -927,6 +1013,9 @@ impl Executor {
             let output_sink = self.output_sink.clone();
             let worker_aliases = type_aliases.clone();
             let worker_records = record_defs.clone();
+            let worker_module_cache = module_cache.clone();
+            let worker_builtin_modules = builtin_modules.clone();
+            let worker_prelude_names = prelude_names.clone();
 
             let handle = thread::spawn(move || {
                 while !cancel_flag.load(Ordering::Relaxed) {
@@ -953,6 +1042,10 @@ impl Executor {
                         type_aliases: worker_aliases.clone(),
                         record_defs: worker_records.clone(),
                         generator_ctx: None,
+                        module_cache: worker_module_cache.clone(),
+                        loading_stack: Vec::new(),
+                        builtin_modules: worker_builtin_modules.clone(),
+                        prelude_names: worker_prelude_names.clone(),
                     };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
@@ -1198,6 +1291,10 @@ impl Executor {
                         type_aliases: self.type_aliases.clone(),
                         record_defs: self.record_defs.clone(),
                         generator_ctx: None,
+                        module_cache: self.module_cache.clone(),
+                        loading_stack: self.loading_stack.clone(),
+                        builtin_modules: self.builtin_modules.clone(),
+                        prelude_names: self.prelude_names.clone(),
                     };
                     Ok(self.spawn_generator(gen_exec, func, args, span))
                 } else {
@@ -1602,8 +1699,20 @@ impl Executor {
         }
     }
 
-    fn member_access(&self, obj: Value, name: &str, _span: Span) -> Result<Value, RuntimeError> {
+    fn namespace_access(&self, obj: Value, name: &str, span: Span) -> Result<Value, RuntimeError> {
         match obj {
+            Value::Module(module) => module
+                .exports
+                .get(name)
+                .cloned()
+                .ok_or_else(|| self.err(&format!("Module '{}' has no export '{}'", module.name, name), span)),
+            _ => Err(self.err("'::' requires module namespace", span)),
+        }
+    }
+
+    fn member_access(&self, obj: Value, name: &str, span: Span) -> Result<Value, RuntimeError> {
+        match obj {
+            Value::Module(_) => Err(self.err("Use '::' for module namespace access", span)),
             Value::Dict(map) => {
                 if let Ok(guard) = map.lock() {
                     if let Some(v) = guard.get(name) {
@@ -1777,6 +1886,230 @@ impl Executor {
             }
             _ => Err(self.err("Not iterable", span)),
         }
+    }
+
+    fn exec_use(&mut self, module: &str, alias: Option<&str>, span: Span) -> Result<(), RuntimeError> {
+        let module_value = self.load_builtin_module(module, span)?;
+        if let Some(alias_name) = alias {
+            self.ensure_name_free(alias_name, span)?;
+            self.define(alias_name, Value::Module(module_value));
+            return Ok(());
+        }
+
+        let mut export_names: Vec<String> = module_value.exports.keys().cloned().collect();
+        export_names.sort();
+        for name in &export_names {
+            self.ensure_name_free(name, span)?;
+        }
+        if let Some(existing) = self.lookup(module) {
+            match existing {
+                Value::Module(existing_module) if Arc::ptr_eq(&existing_module, &module_value) => {}
+                _ => return Err(self.err(&format!("Name conflict for import/use binding '{}'", module), span)),
+            }
+        }
+
+        for name in export_names {
+            if let Some(value) = module_value.exports.get(&name) {
+                self.define(&name, value.clone());
+            }
+        }
+        self.define(module, Value::Module(module_value));
+        Ok(())
+    }
+
+    fn exec_import_named(
+        &mut self,
+        items: &[crate::parser::ast::ImportItem],
+        source: &ImportSource,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
+        let module = self.load_module_from_source(source, span)?;
+        for item in items {
+            let bind_name = item.alias.as_deref().unwrap_or(&item.name);
+            self.ensure_name_free(bind_name, span)?;
+            let value = module
+                .exports
+                .get(&item.name)
+                .cloned()
+                .ok_or_else(|| self.err(&format!("Module '{}' has no export '{}'", module.name, item.name), span))?;
+            self.define(bind_name, value);
+        }
+        Ok(())
+    }
+
+    fn exec_import_namespace(&mut self, alias: &str, source: &ImportSource, span: Span) -> Result<(), RuntimeError> {
+        self.ensure_name_free(alias, span)?;
+        let module = self.load_module_from_source(source, span)?;
+        self.define(alias, Value::Module(module));
+        Ok(())
+    }
+
+    fn ensure_name_free(&self, name: &str, span: Span) -> Result<(), RuntimeError> {
+        if self.lookup(name).is_some() {
+            return Err(self.err(&format!("Name conflict for import/use binding '{}'", name), span));
+        }
+        Ok(())
+    }
+
+    fn load_module_from_source(&mut self, source: &ImportSource, span: Span) -> Result<Arc<ModuleValue>, RuntimeError> {
+        match source {
+            ImportSource::Builtin(name) => self.load_builtin_module(name, span),
+            ImportSource::Path(path) => self.load_script_module(path, span),
+        }
+    }
+
+    fn load_builtin_module(&self, name: &str, span: Span) -> Result<Arc<ModuleValue>, RuntimeError> {
+        self.builtin_modules
+            .get(name)
+            .cloned()
+            .ok_or_else(|| self.err(&format!("Unknown builtin module '{name}'"), span))
+    }
+
+    fn load_script_module(&mut self, raw_path: &str, span: Span) -> Result<Arc<ModuleValue>, RuntimeError> {
+        let full = self.resolve_script_path(raw_path, span)?;
+        let key = format!("script:{}", full.display());
+
+        {
+            let cache = self
+                .module_cache
+                .lock()
+                .map_err(|_| self.err("Module cache lock poisoned", span))?;
+            if let Some(state) = cache.get(&key) {
+                return match state {
+                    ModuleLoadState::Ready(module) => Ok(module.clone()),
+                    ModuleLoadState::Loading => {
+                        let mut trace = self.loading_stack.clone();
+                        trace.push(key.clone());
+                        Err(self.err(
+                            &format!(
+                                "Circular import detected: {}",
+                                trace
+                                    .iter()
+                                    .map(|entry| entry.trim_start_matches("script:"))
+                                    .collect::<Vec<_>>()
+                                    .join(" -> ")
+                            ),
+                            span,
+                        ))
+                    }
+                };
+            }
+        }
+
+        {
+            let mut cache = self
+                .module_cache
+                .lock()
+                .map_err(|_| self.err("Module cache lock poisoned", span))?;
+            cache.insert(key.clone(), ModuleLoadState::Loading);
+        }
+        self.loading_stack.push(key.clone());
+
+        let result = (|| -> Result<Arc<ModuleValue>, RuntimeError> {
+            let source = fs::read_to_string(&full)
+                .map_err(|e| self.err(&format!("Failed to read module {}: {e}", full.display()), span))?;
+            let mut scanner = Scanner::new(&source);
+            let tokens = scanner
+                .scan_tokens()
+                .map_err(|e| self.err(&format!("{}: {e}", full.display()), span))?;
+            let mut parser = Parser::new(tokens, &source, full.to_string_lossy().to_string());
+            let program = parser
+                .parse_program()
+                .map_err(|e| self.err(&e, span))?;
+
+            let mut child = Executor {
+                filename: full.to_string_lossy().to_string(),
+                source: source.clone(),
+                scopes: vec![self.prelude_scope()],
+                deferred_scopes: vec![Vec::new()],
+                stack: Vec::new(),
+                last_span: Span { line: 1, col: 1 },
+                output_sink: self.output_sink.clone(),
+                loop_depth: 0,
+                type_aliases: HashMap::new(),
+                record_defs: HashMap::new(),
+                generator_ctx: None,
+                module_cache: self.module_cache.clone(),
+                loading_stack: self.loading_stack.clone(),
+                builtin_modules: self.builtin_modules.clone(),
+                prelude_names: self.prelude_names.clone(),
+            };
+
+            child.execute(&program)?;
+            let exports = child.module_exports();
+            Ok(Arc::new(ModuleValue {
+                name: module_name_from_path(&full),
+                exports,
+                origin: ModuleOrigin::Script(full.to_string_lossy().to_string()),
+            }))
+        })();
+
+        self.loading_stack.pop();
+
+        match result {
+            Ok(module) => {
+                let mut cache = self
+                    .module_cache
+                    .lock()
+                    .map_err(|_| self.err("Module cache lock poisoned", span))?;
+                cache.insert(key, ModuleLoadState::Ready(module.clone()));
+                Ok(module)
+            }
+            Err(err) => {
+                if let Ok(mut cache) = self.module_cache.lock() {
+                    cache.remove(&key);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn resolve_script_path(&self, raw_path: &str, span: Span) -> Result<PathBuf, RuntimeError> {
+        let path = Path::new(raw_path);
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            let base = if self.filename == "<repl>" || self.filename == "<stdin>" {
+                std::env::current_dir().map_err(|e| self.err(&format!("Failed to resolve cwd: {e}"), span))?
+            } else {
+                Path::new(&self.filename)
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
+            };
+            base.join(path)
+        };
+        std::fs::canonicalize(&resolved).map_err(|e| {
+            self.err(
+                &format!("Failed to resolve import path '{}': {e}", resolved.display()),
+                span,
+            )
+        })
+    }
+
+    fn prelude_scope(&self) -> HashMap<String, Value> {
+        let mut scope = HashMap::new();
+        if let Some(global) = self.scopes.first() {
+            for name in &self.prelude_names {
+                if let Some(value) = global.get(name) {
+                    scope.insert(name.clone(), value.clone());
+                }
+            }
+        }
+        scope
+    }
+
+    fn module_exports(&self) -> HashMap<String, Value> {
+        let mut exports = HashMap::new();
+        if let Some(global) = self.scopes.first() {
+            for (name, value) in global {
+                if self.prelude_names.contains(name) {
+                    continue;
+                }
+                exports.insert(name.clone(), value.clone());
+            }
+        }
+        exports
     }
 
     fn define(&mut self, name: &str, value: Value) {
@@ -2169,6 +2502,7 @@ fn value_type_str(value: &Value) -> String {
         Value::Nominal { name, .. } => format!("type<{name}>"),
         Value::Task(_) => "task".to_string(),
         Value::Generator(_) => "generator".to_string(),
+        Value::Module(_) => "module".to_string(),
         Value::Function(_) => "fn".to_string(),
         Value::NativeFunction(_) => "fn".to_string(),
         Value::NativeFunctionExec(_) => "fn".to_string(),
@@ -2225,6 +2559,9 @@ fn stmt_contains_yield(stmt: &Stmt) -> bool {
         Stmt::Return { value: None, .. }
         | Stmt::Continue { .. }
         | Stmt::Break { .. }
+        | Stmt::Use { .. }
+        | Stmt::ImportNamed { .. }
+        | Stmt::ImportNamespace { .. }
         | Stmt::TypeAlias { .. }
         | Stmt::RecordDef { .. }
         | Stmt::Function { .. } => false,
@@ -2242,7 +2579,7 @@ fn expr_contains_yield(expr: &Expr) -> bool {
                     CallArg::Named { value, .. } => expr_contains_yield(value),
                 })
         }
-        Expr::Member { object, .. } => expr_contains_yield(object),
+        Expr::Member { object, .. } | Expr::NamespaceMember { object, .. } => expr_contains_yield(object),
         Expr::Index { object, index, .. } => expr_contains_yield(object) || expr_contains_yield(index),
         Expr::Array { items, .. } | Expr::Tuple { items, .. } => {
             items.iter().any(expr_contains_yield)
@@ -2341,4 +2678,11 @@ fn levenshtein(a: &str, b: &str) -> usize {
         std::mem::swap(&mut prev, &mut curr);
     }
     prev[b_bytes.len()]
+}
+
+fn module_name_from_path(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "module".to_string())
 }

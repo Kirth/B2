@@ -444,6 +444,7 @@ fn value_type_label(value: &Value) -> String {
         Value::Nominal { name, .. } => format!("type<{name}>"),
         Value::Task(_) => "task".to_string(),
         Value::Generator(_) => "generator".to_string(),
+        Value::Module(_) => "module".to_string(),
         Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "fn".to_string(),
         Value::Ufcs { .. } => "ufcs".to_string(),
     }

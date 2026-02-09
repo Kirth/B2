@@ -13,12 +13,12 @@ use crate::runtime::value::Value;
 const DEFAULT_TIMEOUT_MS: u64 = 5000;
 
 pub fn register(exec: &mut Executor) {
-    let mut net = HashMap::new();
-    net.insert("ping".to_string(), native_exec(net_ping));
-    net.insert("http".to_string(), native_exec(net_http));
-    net.insert("tcp_connect".to_string(), native_exec(net_tcp_connect));
-    net.insert("tcp_listen".to_string(), native_exec(net_tcp_listen));
-    exec.register_value("net", Value::Dict(Arc::new(Mutex::new(net))));
+    let mut exports = HashMap::new();
+    exports.insert("ping".to_string(), native_exec(net_ping));
+    exports.insert("http".to_string(), native_exec(net_http));
+    exports.insert("tcp_connect".to_string(), native_exec(net_tcp_connect));
+    exports.insert("tcp_listen".to_string(), native_exec(net_tcp_listen));
+    exec.register_builtin_module("net", exports);
 }
 
 fn native_exec<F>(f: F) -> Value

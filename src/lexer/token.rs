@@ -28,6 +28,10 @@ pub enum TokenKind {
     Catch,
     Finally,
     Defer,
+    Use,
+    Import,
+    From,
+    As,
 
     // Operators / punctuation
     LParen,
@@ -38,6 +42,7 @@ pub enum TokenKind {
     RBracket,
     Comma,
     Colon,
+    ColonColon,
     Semicolon,
     Dot,
     DotDot,
