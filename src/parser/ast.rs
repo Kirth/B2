@@ -54,8 +54,16 @@ pub enum Stmt {
         finally_block: Option<Vec<Stmt>>,
         span: Span,
     },
-    Function { name: String, params: Vec<ParamSpec>, return_type: Option<TypeExpr>, body: Vec<Stmt>, span: Span },
+    Function {
+        name: String,
+        params: Vec<ParamSpec>,
+        return_type: Option<TypeExpr>,
+        body: Vec<Stmt>,
+        is_generator: bool,
+        span: Span,
+    },
     Return { value: Option<Expr>, span: Span },
+    Yield { value: Option<Expr>, span: Span },
     Continue { span: Span },
     Break { span: Span },
     Throw { value: Expr, span: Span },
@@ -77,6 +85,13 @@ pub enum Expr {
     Array { items: Vec<Expr>, span: Span },
     Tuple { items: Vec<Expr>, span: Span },
     Dict { items: Vec<(Expr, Expr)>, span: Span },
+    ArrayComprehension {
+        pattern: Pattern,
+        iterable: Box<Expr>,
+        guard: Option<Box<Expr>>,
+        map_expr: Box<Expr>,
+        span: Span,
+    },
     Range { start: Box<Expr>, end: Box<Expr>, span: Span },
     IfExpr { cond: Box<Expr>, then_branch: Vec<Stmt>, else_branch: Vec<Stmt>, span: Span },
     Match { subject: Box<Expr>, arms: Vec<MatchArm>, span: Span },
@@ -139,6 +154,7 @@ impl Stmt {
             | Stmt::Try { span, .. }
             | Stmt::Function { span, .. }
             | Stmt::Return { span, .. }
+            | Stmt::Yield { span, .. }
             | Stmt::Continue { span, .. }
             | Stmt::Break { span, .. }
             | Stmt::Throw { span, .. }
@@ -163,6 +179,7 @@ impl Expr {
             | Expr::Array { span, .. }
             | Expr::Tuple { span, .. }
             | Expr::Dict { span, .. }
+            | Expr::ArrayComprehension { span, .. }
             | Expr::Range { span, .. }
             | Expr::IfExpr { span, .. }
             | Expr::Match { span, .. }

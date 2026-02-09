@@ -16,6 +16,7 @@ pub struct Function {
     pub body: Vec<Stmt>,
     pub captured: HashMap<String, Value>,
     pub name: String,
+    pub is_generator: bool,
 }
 
 #[derive(Clone)]
@@ -45,6 +46,28 @@ pub struct TaskState {
     pub error: Option<RuntimeError>,
 }
 
+pub struct GeneratorHandle {
+    state: Arc<Mutex<GeneratorState>>,
+}
+
+struct GeneratorState {
+    pull_tx: mpsc::Sender<()>,
+    event_rx: mpsc::Receiver<GeneratorEvent>,
+    completed: bool,
+    final_return: Option<Value>,
+}
+
+enum GeneratorEvent {
+    Yield(Value),
+    Return(Value),
+    Error(RuntimeError),
+}
+
+struct GeneratorYieldContext {
+    pull_rx: mpsc::Receiver<()>,
+    event_tx: mpsc::Sender<GeneratorEvent>,
+}
+
 #[derive(Clone)]
 struct RecordDef {
     fields: Vec<RecordField>,
@@ -61,6 +84,7 @@ pub struct Executor {
     loop_depth: usize,
     type_aliases: HashMap<String, TypeExpr>,
     record_defs: HashMap<String, RecordDef>,
+    generator_ctx: Option<GeneratorYieldContext>,
 }
 
 impl Executor {
@@ -76,6 +100,7 @@ impl Executor {
             loop_depth: 0,
             type_aliases: HashMap::new(),
             record_defs: HashMap::new(),
+            generator_ctx: None,
         }
     }
 
@@ -215,7 +240,7 @@ impl Executor {
             }
             Stmt::For { pattern, iterable, body, span } => {
                 let it = self.eval_expr(iterable)?;
-                let items = self.iterate_value(it)?;
+                let items = self.iterate_value(it, *span)?;
                 for item in items {
                     self.push_scope();
                     let bind_res = self.bind_pattern(pattern, item, *span);
@@ -304,7 +329,14 @@ impl Executor {
                 }
                 pending
             }
-            Stmt::Function { name, params, return_type, body, .. } => {
+            Stmt::Function {
+                name,
+                params,
+                return_type,
+                body,
+                is_generator,
+                ..
+            } => {
                 let captured = self.flatten_scopes();
                 let func = Function {
                     params: params.clone(),
@@ -312,6 +344,7 @@ impl Executor {
                     body: body.clone(),
                     captured,
                     name: name.clone(),
+                    is_generator: *is_generator,
                 };
                 self.define(name, Value::Function(Arc::new(func)));
                 Ok(ExecResult::Normal)
@@ -322,6 +355,24 @@ impl Executor {
                     None => Value::Null,
                 };
                 Ok(ExecResult::Return(val))
+            }
+            Stmt::Yield { value, span } => {
+                if self.generator_ctx.is_none() {
+                    return Err(self.err("'yield' used outside generator", *span));
+                }
+                let yielded = if let Some(expr) = value {
+                    self.eval_expr(expr)?
+                } else {
+                    Value::Null
+                };
+                let ctx = self.generator_ctx.as_mut().expect("checked generator context");
+                if ctx.event_tx.send(GeneratorEvent::Yield(yielded)).is_err() {
+                    return Ok(ExecResult::Return(Value::Null));
+                }
+                if ctx.pull_rx.recv().is_err() {
+                    return Ok(ExecResult::Return(Value::Null));
+                }
+                Ok(ExecResult::Normal)
             }
             Stmt::Continue { span } => {
                 if self.loop_depth == 0 {
@@ -411,7 +462,7 @@ impl Executor {
 
     fn exec_parallel_for(&mut self, pattern: &Pattern, iterable: &Expr, body: &[Stmt]) -> Result<(), RuntimeError> {
         let it = self.eval_expr(iterable)?;
-        let items = self.iterate_value(it)?;
+        let items = self.iterate_value(it, iterable.span())?;
         if items.is_empty() {
             return Ok(());
         }
@@ -464,6 +515,7 @@ impl Executor {
                         loop_depth: 0,
                         type_aliases: worker_aliases.clone(),
                         record_defs: worker_records.clone(),
+                        generator_ctx: None,
                     };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
@@ -600,6 +652,36 @@ impl Executor {
                 }
                 Ok(Value::Dict(Arc::new(Mutex::new(map))))
             }
+            Expr::ArrayComprehension {
+                pattern,
+                iterable,
+                guard,
+                map_expr,
+                span,
+            } => {
+                let it = self.eval_expr(iterable)?;
+                let items = self.iterate_value(it, *span)?;
+                let mut out = Vec::new();
+                for item in items {
+                    self.push_scope();
+                    if let Err(e) = self.bind_pattern(pattern, item, *span) {
+                        return match self.exit_scope(Err(e)) {
+                            Ok(_) => Err(self.err("Array comprehension binding failed", *span)),
+                            Err(e2) => Err(e2),
+                        };
+                    }
+                    let should_include = if let Some(cond) = guard.as_ref() {
+                        self.eval_expr(cond)?.is_truthy()
+                    } else {
+                        true
+                    };
+                    if should_include {
+                        out.push(self.eval_expr(map_expr.as_ref())?);
+                    }
+                    self.exit_scope(Ok(ExecResult::Normal))?;
+                }
+                Ok(Value::array(out))
+            }
             Expr::Range { start, end, .. } => {
                 let s = self.eval_expr(start)?;
                 let e = self.eval_expr(end)?;
@@ -657,6 +739,7 @@ impl Executor {
                         loop_depth: 0,
                         type_aliases,
                         record_defs,
+                        generator_ctx: None,
                     };
                     exec.eval_block_expr(&body)
                 }))
@@ -698,6 +781,7 @@ impl Executor {
                         loop_depth: 0,
                         type_aliases,
                         record_defs,
+                        generator_ctx: None,
                     };
                     exec.call_value(callee_value, arg_values)
                 }))
@@ -726,6 +810,7 @@ impl Executor {
                     body: body.clone(),
                     captured,
                     name: "<lambda>".to_string(),
+                    is_generator: block_contains_yield(body),
                 };
                 Ok(Value::Function(Arc::new(func)))
             }
@@ -812,7 +897,7 @@ impl Executor {
 
     fn eval_parallel_for_expr(&mut self, pattern: &Pattern, iterable: &Expr, body: &[Stmt]) -> Result<Value, RuntimeError> {
         let it = self.eval_expr(iterable)?;
-        let items = self.iterate_value(it)?;
+        let items = self.iterate_value(it, iterable.span())?;
         if items.is_empty() {
             return Ok(Value::array(Vec::new()));
         }
@@ -867,6 +952,7 @@ impl Executor {
                         loop_depth: 0,
                         type_aliases: worker_aliases.clone(),
                         record_defs: worker_records.clone(),
+                        generator_ctx: None,
                     };
                     if let Err(e) = exec.bind_pattern(&pattern, item, Span { line: 1, col: 1 }) {
                         let _ = err_sender.send(e);
@@ -994,6 +1080,87 @@ impl Executor {
         }
     }
 
+    fn spawn_generator(
+        &self,
+        mut gen_exec: Executor,
+        func: Arc<Function>,
+        args: Vec<RuntimeCallArg>,
+        span: Span,
+    ) -> Value {
+        let (pull_tx, pull_rx) = mpsc::channel::<()>();
+        let (event_tx, event_rx) = mpsc::channel::<GeneratorEvent>();
+
+        thread::spawn(move || {
+            let _ = pull_rx.recv();
+            gen_exec.generator_ctx = Some(GeneratorYieldContext {
+                pull_rx,
+                event_tx: event_tx.clone(),
+            });
+            let result = gen_exec.call_user_function(&func, args, span);
+            match result {
+                Ok(v) => {
+                    let _ = event_tx.send(GeneratorEvent::Return(v));
+                }
+                Err(e) => {
+                    let _ = event_tx.send(GeneratorEvent::Error(e));
+                }
+            }
+        });
+
+        let handle = GeneratorHandle {
+            state: Arc::new(Mutex::new(GeneratorState {
+                pull_tx,
+                event_rx,
+                completed: false,
+                final_return: None,
+            })),
+        };
+        Value::Generator(Arc::new(handle))
+    }
+
+    pub fn next_generator(&self, generator: &Arc<GeneratorHandle>, span: Span) -> Result<Value, RuntimeError> {
+        match self.generator_next_step(generator, span)? {
+            GeneratorStep::Yield(v) => Ok(generator_step_dict(false, v, Value::Null)),
+            GeneratorStep::Done(v) => Ok(generator_step_dict(true, Value::Null, v)),
+        }
+    }
+
+    fn generator_next_step(
+        &self,
+        generator: &Arc<GeneratorHandle>,
+        span: Span,
+    ) -> Result<GeneratorStep, RuntimeError> {
+        let mut state = generator
+            .state
+            .lock()
+            .map_err(|_| self.err("Generator state lock poisoned", span))?;
+        if state.completed {
+            return Ok(GeneratorStep::Done(
+                state.final_return.clone().unwrap_or(Value::Null),
+            ));
+        }
+        state
+            .pull_tx
+            .send(())
+            .map_err(|_| self.err("Generator is closed", span))?;
+        let event = state
+            .event_rx
+            .recv()
+            .map_err(|_| self.err("Generator is closed", span))?;
+        match event {
+            GeneratorEvent::Yield(v) => Ok(GeneratorStep::Yield(v)),
+            GeneratorEvent::Return(v) => {
+                state.completed = true;
+                state.final_return = Some(v.clone());
+                Ok(GeneratorStep::Done(v))
+            }
+            GeneratorEvent::Error(e) => {
+                state.completed = true;
+                Err(e)
+            }
+        }
+    }
+
     fn call(&mut self, callee: Value, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
         match callee {
             Value::NativeFunction(f) => {
@@ -1018,10 +1185,27 @@ impl Executor {
                 self.call(target, new_args, span)
             }
             Value::Function(func) => {
-                self.push_frame(func.name.clone(), span);
-                let res = self.call_user_function(&func, args, span);
-                self.pop_frame();
-                res
+                if func.is_generator {
+                    let gen_exec = Executor {
+                        filename: self.filename.clone(),
+                        source: self.source.clone(),
+                        scopes: vec![func.captured.clone()],
+                        deferred_scopes: vec![Vec::new()],
+                        stack: Vec::new(),
+                        last_span: Span { line: 1, col: 1 },
+                        output_sink: self.output_sink.clone(),
+                        loop_depth: 0,
+                        type_aliases: self.type_aliases.clone(),
+                        record_defs: self.record_defs.clone(),
+                        generator_ctx: None,
+                    };
+                    Ok(self.spawn_generator(gen_exec, func, args, span))
+                } else {
+                    self.push_frame(func.name.clone(), span);
+                    let res = self.call_user_function(&func, args, span);
+                    self.pop_frame();
+                    res
+                }
             }
             _ => Err(self.err("Not callable", span)),
         }
@@ -1029,6 +1213,10 @@ impl Executor {
 
     pub fn call_value(&mut self, callee: Value, args: Vec<RuntimeCallArg>) -> Result<Value, RuntimeError> {
         self.call(callee, args, Span { line: 0, col: 0 })
+    }
+
+    pub fn collect_iterable(&self, value: Value, span: Span) -> Result<Vec<Value>, RuntimeError> {
+        self.iterate_value(value, span)
     }
 
     fn positional_only_args(&self, args: Vec<RuntimeCallArg>, span: Span) -> Result<Vec<Value>, RuntimeError> {
@@ -1555,7 +1743,7 @@ impl Executor {
         }
     }
 
-    fn iterate_value(&self, val: Value) -> Result<Vec<Value>, RuntimeError> {
+    fn iterate_value(&self, val: Value, span: Span) -> Result<Vec<Value>, RuntimeError> {
         match val {
             Value::Array(arr) => Ok(arr.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())),
             Value::Tuple(tup) => Ok(tup.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())),
@@ -1568,6 +1756,16 @@ impl Executor {
                 }
                 Ok(out)
             }
+            Value::Generator(generator) => {
+                let mut out = Vec::new();
+                loop {
+                    match self.generator_next_step(&generator, span)? {
+                        GeneratorStep::Yield(v) => out.push(v),
+                        GeneratorStep::Done(_) => break,
+                    }
+                }
+                Ok(out)
+            }
             Value::Dict(map) => {
                 let mut out = Vec::new();
                 if let Ok(guard) = map.lock() {
@@ -1577,7 +1775,7 @@ impl Executor {
                 }
                 Ok(out)
             }
-            _ => Err(self.err("Not iterable", Span { line: 0, col: 0 })),
+            _ => Err(self.err("Not iterable", span)),
         }
     }
 
@@ -1785,6 +1983,11 @@ enum ExecResult {
     Throw(Value),
 }
 
+enum GeneratorStep {
+    Yield(Value),
+    Done(Value),
+}
+
 fn to_f64(v: Value) -> Result<f64, RuntimeError> {
     match v {
         Value::Number(n) => Ok(n),
@@ -1807,6 +2010,14 @@ fn now_hms() -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+fn generator_step_dict(done: bool, value: Value, final_return: Value) -> Value {
+    let mut map = HashMap::new();
+    map.insert("done".to_string(), Value::Bool(done));
+    map.insert("value".to_string(), value);
+    map.insert("return".to_string(), final_return);
+    Value::Dict(Arc::new(Mutex::new(map)))
 }
 
 fn parallelism_cap() -> usize {
@@ -1856,6 +2067,7 @@ fn type_matches_with_resolver(
             "map" => Ok(matches!(value, Value::Dict(_))),
             "range" => Ok(matches!(value, Value::Range(_, _))),
             "task" => Ok(matches!(value, Value::Task(_))),
+            "generator" => Ok(matches!(value, Value::Generator(_))),
             "fn" => Ok(matches!(value, Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_))),
             other => {
                 if record_defs.contains_key(other) {
@@ -1956,10 +2168,138 @@ fn value_type_str(value: &Value) -> String {
         Value::Duration(_) => "duration".to_string(),
         Value::Nominal { name, .. } => format!("type<{name}>"),
         Value::Task(_) => "task".to_string(),
+        Value::Generator(_) => "generator".to_string(),
         Value::Function(_) => "fn".to_string(),
         Value::NativeFunction(_) => "fn".to_string(),
         Value::NativeFunctionExec(_) => "fn".to_string(),
         Value::Ufcs { .. } => "ufcs".to_string(),
+    }
+}
+
+fn block_contains_yield(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(stmt_contains_yield)
+}
+
+fn stmt_contains_yield(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Yield { .. } => true,
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => block_contains_yield(then_branch) || block_contains_yield(else_branch),
+        Stmt::For { body, .. }
+        | Stmt::ParallelFor { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::Defer { body, .. } => block_contains_yield(body),
+        Stmt::Try {
+            try_block,
+            catch_block,
+            finally_block,
+            ..
+        } => {
+            block_contains_yield(try_block)
+                || catch_block
+                    .as_ref()
+                    .map(|b| block_contains_yield(b))
+                    .unwrap_or(false)
+                || finally_block
+                    .as_ref()
+                    .map(|b| block_contains_yield(b))
+                    .unwrap_or(false)
+        }
+        Stmt::Expr { expr, .. } => expr_contains_yield(expr),
+        Stmt::Let { expr, .. }
+        | Stmt::LetDestructure { expr, .. }
+        | Stmt::Assign { expr, .. }
+        | Stmt::Return {
+            value: Some(expr), ..
+        }
+        | Stmt::Throw { value: expr, .. }
+        | Stmt::Invoke { expr, .. } => expr_contains_yield(expr),
+        Stmt::IndexAssign {
+            target, index, expr, ..
+        } => {
+            expr_contains_yield(target) || expr_contains_yield(index) || expr_contains_yield(expr)
+        }
+        Stmt::Return { value: None, .. }
+        | Stmt::Continue { .. }
+        | Stmt::Break { .. }
+        | Stmt::TypeAlias { .. }
+        | Stmt::RecordDef { .. }
+        | Stmt::Function { .. } => false,
+    }
+}
+
+fn expr_contains_yield(expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary { left, right, .. } => expr_contains_yield(left) || expr_contains_yield(right),
+        Expr::Unary { expr, .. } => expr_contains_yield(expr),
+        Expr::Call { callee, args, .. } => {
+            expr_contains_yield(callee)
+                || args.iter().any(|arg| match arg {
+                    CallArg::Positional(e) | CallArg::Spread(e) => expr_contains_yield(e),
+                    CallArg::Named { value, .. } => expr_contains_yield(value),
+                })
+        }
+        Expr::Member { object, .. } => expr_contains_yield(object),
+        Expr::Index { object, index, .. } => expr_contains_yield(object) || expr_contains_yield(index),
+        Expr::Array { items, .. } | Expr::Tuple { items, .. } => {
+            items.iter().any(expr_contains_yield)
+        }
+        Expr::Dict { items, .. } => items
+            .iter()
+            .any(|(k, v)| expr_contains_yield(k) || expr_contains_yield(v)),
+        Expr::ArrayComprehension {
+            iterable,
+            guard,
+            map_expr,
+            ..
+        } => {
+            expr_contains_yield(iterable)
+                || guard
+                    .as_ref()
+                    .map(|g| expr_contains_yield(g))
+                    .unwrap_or(false)
+                || expr_contains_yield(map_expr)
+        }
+        Expr::Range { start, end, .. } => expr_contains_yield(start) || expr_contains_yield(end),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => expr_contains_yield(cond) || block_contains_yield(then_branch) || block_contains_yield(else_branch),
+        Expr::Match { subject, arms, .. } => {
+            expr_contains_yield(subject)
+                || arms.iter().any(|arm| match &arm.kind {
+                    MatchArmKind::Value(e) => expr_contains_yield(e) || block_contains_yield(&arm.body),
+                    MatchArmKind::Compare { rhs, .. } => {
+                        expr_contains_yield(rhs) || block_contains_yield(&arm.body)
+                    }
+                    MatchArmKind::Wildcard => block_contains_yield(&arm.body),
+                })
+        }
+        Expr::ParallelFor { iterable, body, .. } => {
+            expr_contains_yield(iterable) || block_contains_yield(body)
+        }
+        Expr::TaskBlock { .. } => false,
+        Expr::TaskCall { callee, args, .. } => {
+            expr_contains_yield(callee)
+                || args.iter().any(|arg| match arg {
+                    CallArg::Positional(e) | CallArg::Spread(e) => expr_contains_yield(e),
+                    CallArg::Named { value, .. } => expr_contains_yield(value),
+                })
+        }
+        Expr::Await { expr, .. } => expr_contains_yield(expr),
+        Expr::Lambda { .. } => false,
+        Expr::InterpolatedString { parts, .. } => parts.iter().any(|p| match p {
+            InterpPart::Literal(_) => false,
+            InterpPart::Expr(e) => expr_contains_yield(e),
+        }),
+        Expr::Sh { command, .. } => expr_contains_yield(command),
+        Expr::Ssh { host, command, .. } => expr_contains_yield(host) || expr_contains_yield(command),
+        Expr::Literal { .. } | Expr::Var { .. } => false,
     }
 }
 

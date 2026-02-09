@@ -3,7 +3,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::executor::{Function, TaskHandle};
+use super::executor::{Function, GeneratorHandle, TaskHandle};
 
 #[derive(Clone)]
 pub enum Value {
@@ -18,6 +18,7 @@ pub enum Value {
     Duration(Duration),
     Nominal { name: String, inner: Box<Value> },
     Task(Arc<TaskHandle>),
+    Generator(Arc<GeneratorHandle>),
     Function(Arc<Function>),
     NativeFunction(Arc<dyn Fn(Vec<Value>) -> Result<Value, String> + Send + Sync>),
     NativeFunctionExec(Arc<dyn Fn(&mut crate::runtime::executor::Executor, Vec<Value>, crate::parser::ast::Span) -> Result<Value, crate::runtime::errors::RuntimeError> + Send + Sync>),
@@ -65,6 +66,7 @@ impl Value {
             Value::Duration(d) => d.as_millis() != 0,
             Value::Nominal { inner, .. } => inner.is_truthy(),
             Value::Task(_) => true,
+            Value::Generator(_) => true,
             Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) | Value::Ufcs { .. } => true,
         }
     }
@@ -98,6 +100,7 @@ impl Value {
             Value::Duration(d) => format!("{}ms", d.as_millis()),
             Value::Nominal { name, inner } => format!("{name}({})", inner.as_string()),
             Value::Task(_) => "<task>".to_string(),
+            Value::Generator(_) => "<generator>".to_string(),
             Value::Function(_) => "<fn>".to_string(),
             Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "<native fn>".to_string(),
             Value::Ufcs { name, .. } => format!("<ufcs {}>", name),

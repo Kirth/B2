@@ -70,6 +70,18 @@ impl<'a> Parser<'a> {
             };
             return Ok(Stmt::Return { value: Some(value), span });
         }
+        if self.match_kind(&TokenKind::Yield) {
+            let span = self.prev_span();
+            if self.check(&TokenKind::Semicolon) {
+                self.advance();
+                return Ok(Stmt::Yield { value: None, span });
+            }
+            let value = self.parse_expression()?;
+            return Ok(Stmt::Yield {
+                value: Some(value),
+                span,
+            });
+        }
         if self.match_kind(&TokenKind::Continue) {
             let span = self.prev_span();
             if self.check(&TokenKind::Semicolon) {
@@ -175,7 +187,15 @@ impl<'a> Parser<'a> {
             None
         };
         let body = self.parse_block()?;
-        Ok(Stmt::Function { name, params, return_type, body, span })
+        let is_generator = contains_yield(&body);
+        Ok(Stmt::Function {
+            name,
+            params,
+            return_type,
+            body,
+            span,
+            is_generator,
+        })
     }
 
     fn parse_type_alias_stmt(&mut self) -> Result<Stmt, String> {
@@ -584,6 +604,9 @@ impl<'a> Parser<'a> {
         }
         if self.match_kind(&TokenKind::LBracket) {
             let span = self.prev_span();
+            if self.match_kind(&TokenKind::For) {
+                return self.parse_array_comprehension(span);
+            }
             let elements = self.parse_elements()?;
             self.consume(&TokenKind::RBracket, "Expected ']' after array")?;
             return Ok(Expr::Array { items: elements, span });
@@ -657,6 +680,30 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Expr::Match { subject: Box::new(subject), arms, span })
+    }
+
+    fn parse_array_comprehension(&mut self, span: Span) -> Result<Expr, String> {
+        let pattern = self.parse_pattern_list()?;
+        let in_tok = self.consume_identifier("Expected 'in' after loop variable")?;
+        if in_tok != "in" {
+            return Err(self.error_at_current("Expected 'in' after loop variable"));
+        }
+        let iterable = self.parse_expression()?;
+        let guard = if self.match_kind(&TokenKind::If) {
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+        self.consume(&TokenKind::FatArrow, "Expected '=>' in array comprehension")?;
+        let map_expr = self.parse_expression()?;
+        self.consume(&TokenKind::RBracket, "Expected ']' after array comprehension")?;
+        Ok(Expr::ArrayComprehension {
+            pattern,
+            iterable: Box::new(iterable),
+            guard,
+            map_expr: Box::new(map_expr),
+            span,
+        })
     }
 
     fn parse_match_arm_body(&mut self) -> Result<Vec<Stmt>, String> {
@@ -1136,6 +1183,129 @@ fn parse_expression_from_str(expr_text: &str, filename: &str) -> Result<Expr, St
     let tokens = scanner.scan_tokens().map_err(|e| format!("{filename}: {e}"))?;
     let mut parser = Parser::new(tokens, expr_text, filename.to_string());
     parser.parse_expression()
+}
+
+fn contains_yield(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(stmt_contains_yield)
+}
+
+fn stmt_contains_yield(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Yield { .. } => true,
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => contains_yield(then_branch) || contains_yield(else_branch),
+        Stmt::For { body, .. }
+        | Stmt::ParallelFor { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::Defer { body, .. } => contains_yield(body),
+        Stmt::Try {
+            try_block,
+            catch_block,
+            finally_block,
+            ..
+        } => {
+            contains_yield(try_block)
+                || catch_block
+                    .as_ref()
+                    .map(|b| contains_yield(b))
+                    .unwrap_or(false)
+                || finally_block
+                    .as_ref()
+                    .map(|b| contains_yield(b))
+                    .unwrap_or(false)
+        }
+        Stmt::Expr { expr, .. } => expr_contains_yield(expr),
+        Stmt::Let { expr, .. }
+        | Stmt::LetDestructure { expr, .. }
+        | Stmt::Assign { expr, .. }
+        | Stmt::Return {
+            value: Some(expr), ..
+        }
+        | Stmt::Throw { value: expr, .. }
+        | Stmt::Invoke { expr, .. } => expr_contains_yield(expr),
+        Stmt::IndexAssign {
+            target, index, expr, ..
+        } => {
+            expr_contains_yield(target) || expr_contains_yield(index) || expr_contains_yield(expr)
+        }
+        Stmt::Return { value: None, .. }
+        | Stmt::Continue { .. }
+        | Stmt::Break { .. }
+        | Stmt::TypeAlias { .. }
+        | Stmt::RecordDef { .. }
+        | Stmt::Function { .. } => false,
+    }
+}
+
+fn expr_contains_yield(expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary { left, right, .. } => expr_contains_yield(left) || expr_contains_yield(right),
+        Expr::Unary { expr, .. } => expr_contains_yield(expr),
+        Expr::Call { callee, args, .. } => {
+            expr_contains_yield(callee)
+                || args.iter().any(|arg| match arg {
+                    CallArg::Positional(e) | CallArg::Spread(e) => expr_contains_yield(e),
+                    CallArg::Named { value, .. } => expr_contains_yield(value),
+                })
+        }
+        Expr::Member { object, .. } => expr_contains_yield(object),
+        Expr::Index { object, index, .. } => expr_contains_yield(object) || expr_contains_yield(index),
+        Expr::Array { items, .. } | Expr::Tuple { items, .. } => {
+            items.iter().any(expr_contains_yield)
+        }
+        Expr::Dict { items, .. } => items
+            .iter()
+            .any(|(k, v)| expr_contains_yield(k) || expr_contains_yield(v)),
+        Expr::ArrayComprehension {
+            iterable,
+            guard,
+            map_expr,
+            ..
+        } => {
+            expr_contains_yield(iterable)
+                || guard
+                    .as_ref()
+                    .map(|g| expr_contains_yield(g))
+                    .unwrap_or(false)
+                || expr_contains_yield(map_expr)
+        }
+        Expr::Range { start, end, .. } => expr_contains_yield(start) || expr_contains_yield(end),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => expr_contains_yield(cond) || contains_yield(then_branch) || contains_yield(else_branch),
+        Expr::Match { subject, arms, .. } => {
+            expr_contains_yield(subject)
+                || arms.iter().any(|arm| match &arm.kind {
+                    MatchArmKind::Value(e) => expr_contains_yield(e) || contains_yield(&arm.body),
+                    MatchArmKind::Compare { rhs, .. } => expr_contains_yield(rhs) || contains_yield(&arm.body),
+                    MatchArmKind::Wildcard => contains_yield(&arm.body),
+                })
+        }
+        Expr::ParallelFor { iterable, body, .. } => expr_contains_yield(iterable) || contains_yield(body),
+        Expr::TaskBlock { .. } => false,
+        Expr::TaskCall { callee, args, .. } => {
+            expr_contains_yield(callee)
+                || args.iter().any(|arg| match arg {
+                    CallArg::Positional(e) | CallArg::Spread(e) => expr_contains_yield(e),
+                    CallArg::Named { value, .. } => expr_contains_yield(value),
+                })
+        }
+        Expr::Await { expr, .. } => expr_contains_yield(expr),
+        Expr::Lambda { .. } => false,
+        Expr::InterpolatedString { parts, .. } => parts.iter().any(|p| match p {
+            InterpPart::Literal(_) => false,
+            InterpPart::Expr(e) => expr_contains_yield(e),
+        }),
+        Expr::Sh { command, .. } => expr_contains_yield(command),
+        Expr::Ssh { host, command, .. } => expr_contains_yield(host) || expr_contains_yield(command),
+        Expr::Literal { .. } | Expr::Var { .. } => false,
+    }
 }
 
 fn token_desc(tok: &Token) -> String {

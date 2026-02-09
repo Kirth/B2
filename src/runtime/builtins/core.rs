@@ -88,6 +88,24 @@ pub fn register(exec: &mut Executor) {
         Ok(Value::array(out))
     });
 
+    exec.register_native_exec("collect", |exec, args, span| {
+        if args.len() != 1 {
+            return Err(exec.make_error("collect expects exactly 1 argument", span));
+        }
+        let items = iter_values(args[0].clone(), exec, span)?;
+        Ok(Value::array(items))
+    });
+
+    exec.register_native_exec("next", |exec, args, span| {
+        if args.len() != 1 {
+            return Err(exec.make_error("next expects exactly 1 argument", span));
+        }
+        match &args[0] {
+            Value::Generator(generator) => exec.next_generator(generator, span),
+            _ => Err(exec.make_error("next expects generator", span)),
+        }
+    });
+
     exec.register_native_exec("filter", |exec, args, span| {
         let (iterable, func) = expect_two(args, exec, span)?;
         let items = iter_values(iterable, exec, span)?;
@@ -409,49 +427,7 @@ where
 }
 
 fn iter_values(value: Value, exec: &Executor, span: crate::parser::ast::Span) -> Result<Vec<Value>, RuntimeError> {
-    match value {
-        Value::Array(arr) => Ok(arr.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())),
-        Value::Tuple(tup) => Ok(tup.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())),
-        Value::Range(a, b) => {
-            let mut out = Vec::new();
-            if a <= b {
-                for i in a..=b { out.push(Value::Number(i as f64)); }
-            } else {
-                for i in (b..=a).rev() { out.push(Value::Number(i as f64)); }
-            }
-            Ok(out)
-        }
-        Value::Dict(map) => {
-            let mut out = Vec::new();
-            if let Ok(guard) = map.lock() {
-                for (k, v) in guard.iter() {
-                    out.push(Value::array(vec![Value::String(k.clone()), v.clone()]));
-                }
-            }
-            Ok(out)
-        }
-        other => Err(exec.make_error(&format!("Not iterable: {}", type_name(&other)), span)),
-    }
-}
-
-fn type_name(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "Null",
-        Value::Bool(_) => "Bool",
-        Value::Number(_) => "Number",
-        Value::String(_) => "String",
-        Value::Array(_) => "Array",
-        Value::Tuple(_) => "Tuple",
-        Value::Dict(_) => "Dict",
-        Value::Range(_, _) => "Range",
-        Value::Duration(_) => "Duration",
-        Value::Nominal { .. } => "Nominal",
-        Value::Task(_) => "Task",
-        Value::Function(_) => "Function",
-        Value::NativeFunction(_) => "NativeFunction",
-        Value::NativeFunctionExec(_) => "NativeFunctionExec",
-        Value::Ufcs { .. } => "Ufcs",
-    }
+    exec.collect_iterable(value, span)
 }
 
 fn value_type_label(value: &Value) -> String {
@@ -467,6 +443,7 @@ fn value_type_label(value: &Value) -> String {
         Value::Duration(_) => "duration".to_string(),
         Value::Nominal { name, .. } => format!("type<{name}>"),
         Value::Task(_) => "task".to_string(),
+        Value::Generator(_) => "generator".to_string(),
         Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "fn".to_string(),
         Value::Ufcs { .. } => "ufcs".to_string(),
     }

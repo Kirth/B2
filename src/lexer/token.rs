@@ -4,6 +4,7 @@ pub enum TokenKind {
     Let,
     Fn,
     Return,
+    Yield,
     Continue,
     Break,
     Throw,

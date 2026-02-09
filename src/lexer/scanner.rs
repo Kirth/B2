@@ -212,6 +212,7 @@ impl<'a> Scanner<'a> {
             "let" => TokenKind::Let,
             "fn" => TokenKind::Fn,
             "return" => TokenKind::Return,
+            "yield" => TokenKind::Yield,
             "continue" => TokenKind::Continue,
             "break" => TokenKind::Break,
             "throw" => TokenKind::Throw,
