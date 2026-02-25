@@ -50,15 +50,54 @@ pub enum ImportSource {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    Expr { expr: Expr, span: Span },
-    Let { name: String, expr: Expr, span: Span },
-    LetDestructure { pattern: Pattern, expr: Expr, span: Span },
-    Assign { name: String, expr: Expr, span: Span },
-    IndexAssign { target: Expr, index: Expr, expr: Expr, span: Span },
-    If { cond: Expr, then_branch: Vec<Stmt>, else_branch: Vec<Stmt>, span: Span },
-    For { pattern: Pattern, iterable: Expr, body: Vec<Stmt>, span: Span },
-    ParallelFor { pattern: Pattern, iterable: Expr, body: Vec<Stmt>, span: Span },
-    While { cond: Expr, body: Vec<Stmt>, span: Span },
+    Expr {
+        expr: Expr,
+        span: Span,
+    },
+    Let {
+        name: String,
+        expr: Expr,
+        span: Span,
+    },
+    LetDestructure {
+        pattern: Pattern,
+        expr: Expr,
+        span: Span,
+    },
+    Assign {
+        name: String,
+        expr: Expr,
+        span: Span,
+    },
+    IndexAssign {
+        target: Expr,
+        index: Expr,
+        expr: Expr,
+        span: Span,
+    },
+    If {
+        cond: Expr,
+        then_branch: Vec<Stmt>,
+        else_branch: Vec<Stmt>,
+        span: Span,
+    },
+    For {
+        pattern: Pattern,
+        iterable: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    ParallelFor {
+        pattern: Pattern,
+        iterable: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     Try {
         try_block: Vec<Stmt>,
         catch_name: Option<String>,
@@ -74,33 +113,113 @@ pub enum Stmt {
         is_generator: bool,
         span: Span,
     },
-    Return { value: Option<Expr>, span: Span },
-    Yield { value: Option<Expr>, span: Span },
-    Continue { span: Span },
-    Break { span: Span },
-    Throw { value: Expr, span: Span },
-    Defer { body: Vec<Stmt>, span: Span },
-    Use { module: String, alias: Option<String>, span: Span },
-    ImportNamed { items: Vec<ImportItem>, source: ImportSource, span: Span },
-    ImportNamespace { alias: String, source: ImportSource, span: Span },
-    TypeAlias { name: String, target: TypeExpr, span: Span },
-    RecordDef { name: String, fields: Vec<RecordField>, span: Span },
-    Invoke { name: String, expr: Expr, span: Span },
+    Return {
+        value: Option<Expr>,
+        span: Span,
+    },
+    Yield {
+        value: Option<Expr>,
+        span: Span,
+    },
+    Continue {
+        span: Span,
+    },
+    Break {
+        span: Span,
+    },
+    Throw {
+        value: Expr,
+        span: Span,
+    },
+    Defer {
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    Use {
+        module: String,
+        alias: Option<String>,
+        span: Span,
+    },
+    ImportNamed {
+        items: Vec<ImportItem>,
+        source: ImportSource,
+        span: Span,
+    },
+    ImportNamespace {
+        alias: String,
+        source: ImportSource,
+        span: Span,
+    },
+    TypeAlias {
+        name: String,
+        target: TypeExpr,
+        span: Span,
+    },
+    RecordDef {
+        name: String,
+        fields: Vec<RecordField>,
+        span: Span,
+    },
+    Invoke {
+        name: String,
+        expr: Expr,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Literal { value: Value, span: Span },
-    Var { name: String, span: Span },
-    Binary { left: Box<Expr>, op: String, right: Box<Expr>, span: Span },
-    Unary { op: String, expr: Box<Expr>, span: Span },
-    Call { callee: Box<Expr>, args: Vec<CallArg>, span: Span },
-    Member { object: Box<Expr>, name: String, span: Span },
-    NamespaceMember { object: Box<Expr>, name: String, span: Span },
-    Index { object: Box<Expr>, index: Box<Expr>, span: Span },
-    Array { items: Vec<Expr>, span: Span },
-    Tuple { items: Vec<Expr>, span: Span },
-    Dict { items: Vec<(Expr, Expr)>, span: Span },
+    Literal {
+        value: Value,
+        span: Span,
+    },
+    Var {
+        name: String,
+        span: Span,
+    },
+    Binary {
+        left: Box<Expr>,
+        op: String,
+        right: Box<Expr>,
+        span: Span,
+    },
+    Unary {
+        op: String,
+        expr: Box<Expr>,
+        span: Span,
+    },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<CallArg>,
+        span: Span,
+    },
+    Member {
+        object: Box<Expr>,
+        name: String,
+        span: Span,
+    },
+    NamespaceMember {
+        object: Box<Expr>,
+        name: String,
+        span: Span,
+    },
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+        span: Span,
+    },
+    Array {
+        items: Vec<Expr>,
+        span: Span,
+    },
+    Tuple {
+        items: Vec<Expr>,
+        span: Span,
+    },
+    Dict {
+        items: Vec<(Expr, Expr)>,
+        span: Span,
+    },
     ArrayComprehension {
         pattern: Pattern,
         iterable: Box<Expr>,
@@ -108,17 +227,61 @@ pub enum Expr {
         map_expr: Box<Expr>,
         span: Span,
     },
-    Range { start: Box<Expr>, end: Box<Expr>, span: Span },
-    IfExpr { cond: Box<Expr>, then_branch: Vec<Stmt>, else_branch: Vec<Stmt>, span: Span },
-    Match { subject: Box<Expr>, arms: Vec<MatchArm>, span: Span },
-    ParallelFor { pattern: Pattern, iterable: Box<Expr>, body: Vec<Stmt>, span: Span },
-    TaskBlock { body: Vec<Stmt>, span: Span },
-    TaskCall { callee: Box<Expr>, args: Vec<CallArg>, span: Span },
-    Await { expr: Box<Expr>, safe: bool, span: Span },
-    Lambda { params: Vec<ParamSpec>, return_type: Option<TypeExpr>, body: Vec<Stmt>, span: Span },
-    InterpolatedString { parts: Vec<InterpPart>, span: Span },
-    Sh { command: Box<Expr>, span: Span },
-    Ssh { host: Box<Expr>, command: Box<Expr>, span: Span },
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        span: Span,
+    },
+    IfExpr {
+        cond: Box<Expr>,
+        then_branch: Vec<Stmt>,
+        else_branch: Vec<Stmt>,
+        span: Span,
+    },
+    Match {
+        subject: Box<Expr>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
+    ParallelFor {
+        pattern: Pattern,
+        iterable: Box<Expr>,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    TaskBlock {
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    TaskCall {
+        callee: Box<Expr>,
+        args: Vec<CallArg>,
+        span: Span,
+    },
+    Await {
+        expr: Box<Expr>,
+        safe: bool,
+        span: Span,
+    },
+    Lambda {
+        params: Vec<ParamSpec>,
+        return_type: Option<TypeExpr>,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    InterpolatedString {
+        parts: Vec<InterpPart>,
+        span: Span,
+    },
+    Sh {
+        command: Box<Expr>,
+        span: Span,
+    },
+    Ssh {
+        host: Box<Expr>,
+        command: Box<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]

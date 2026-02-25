@@ -30,7 +30,12 @@ impl<'a> Scanner<'a> {
                 None => {}
             }
         }
-        tokens.push(Token::new(TokenKind::Eof, self.line, self.column, self.current));
+        tokens.push(Token::new(
+            TokenKind::Eof,
+            self.line,
+            self.column,
+            self.current,
+        ));
         Ok(tokens)
     }
 
@@ -200,7 +205,9 @@ impl<'a> Scanner<'a> {
             }
             let slice = &self.source[self.start..self.current];
             if is_time_literal(slice) {
-                return Ok(Some(self.token_from(TokenKind::TimeLiteral(slice.to_string()))));
+                return Ok(Some(
+                    self.token_from(TokenKind::TimeLiteral(slice.to_string())),
+                ));
             }
             self.current = suffix_start;
         }
@@ -271,16 +278,28 @@ impl<'a> Scanner<'a> {
     }
 
     fn peek(&self) -> char {
-        if self.is_at_end() { '\0' } else { self.chars[self.current] }
+        if self.is_at_end() {
+            '\0'
+        } else {
+            self.chars[self.current]
+        }
     }
 
     fn peek_next(&self) -> char {
-        if self.current + 1 >= self.chars.len() { '\0' } else { self.chars[self.current + 1] }
+        if self.current + 1 >= self.chars.len() {
+            '\0'
+        } else {
+            self.chars[self.current + 1]
+        }
     }
 
     fn match_char(&mut self, expected: char) -> bool {
-        if self.is_at_end() { return false; }
-        if self.chars[self.current] != expected { return false; }
+        if self.is_at_end() {
+            return false;
+        }
+        if self.chars[self.current] != expected {
+            return false;
+        }
         self.current += 1;
         self.column += 1;
         true
@@ -321,9 +340,102 @@ fn unescape_string(s: &str) -> String {
 fn is_time_literal(s: &str) -> bool {
     let mut idx = 0;
     for c in s.chars() {
-        if c.is_ascii_digit() { idx += 1; } else { break; }
+        if c.is_ascii_digit() {
+            idx += 1;
+        } else {
+            break;
+        }
     }
-    if idx == 0 || idx >= s.len() { return false; }
+    if idx == 0 || idx >= s.len() {
+        return false;
+    }
     let unit = &s[idx..];
     matches!(unit, "ms" | "s" | "m" | "h" | "d")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scanner;
+    use crate::lexer::token::TokenKind;
+
+    fn token_kinds(source: &str) -> Vec<TokenKind> {
+        let mut scanner = Scanner::new(source);
+        let tokens = scanner.scan_tokens().unwrap();
+        tokens.into_iter().map(|t| t.kind).collect()
+    }
+
+    #[test]
+    fn scan_number() {
+        let kinds = token_kinds("42");
+        assert_eq!(kinds.len(), 2); // Number, Eof
+        assert!(matches!(&kinds[0], TokenKind::Number(s) if s == "42"));
+    }
+
+    #[test]
+    fn scan_arithmetic() {
+        let kinds = token_kinds("1 + 2");
+        assert_eq!(kinds.len(), 4); // Number, Plus, Number, Eof
+        assert!(matches!(&kinds[0], TokenKind::Number(_)));
+        assert_eq!(kinds[1], TokenKind::Plus);
+        assert!(matches!(&kinds[2], TokenKind::Number(_)));
+        assert_eq!(kinds[3], TokenKind::Eof);
+    }
+
+    #[test]
+    fn scan_identifiers_and_keywords() {
+        let kinds = token_kinds("let x = fn");
+        assert_eq!(kinds[0], TokenKind::Let);
+        assert!(matches!(&kinds[1], TokenKind::Identifier(s) if s == "x"));
+        assert_eq!(kinds[2], TokenKind::Equal);
+        assert_eq!(kinds[3], TokenKind::Fn);
+    }
+
+    #[test]
+    fn scan_string_literal() {
+        let kinds = token_kinds(r#" "hello" "#);
+        assert_eq!(kinds.len(), 2);
+        assert!(matches!(&kinds[0], TokenKind::String(s) if s == "hello"));
+    }
+
+    #[test]
+    fn scan_true_false() {
+        let kinds = token_kinds("true false");
+        assert_eq!(kinds[0], TokenKind::True);
+        assert_eq!(kinds[1], TokenKind::False);
+    }
+
+    #[test]
+    fn scan_comparison_ops() {
+        let kinds = token_kinds("== != < <= > >=");
+        assert_eq!(kinds[0], TokenKind::EqualEqual);
+        assert_eq!(kinds[1], TokenKind::NotEqual);
+        assert_eq!(kinds[2], TokenKind::Less);
+        assert_eq!(kinds[3], TokenKind::LessEqual);
+        assert_eq!(kinds[4], TokenKind::Greater);
+        assert_eq!(kinds[5], TokenKind::GreaterEqual);
+    }
+
+    #[test]
+    fn scan_sh_ssh_keywords() {
+        let kinds = token_kinds("sh ssh parallel");
+        assert_eq!(kinds[0], TokenKind::Sh);
+        assert_eq!(kinds[1], TokenKind::Ssh);
+        assert_eq!(kinds[2], TokenKind::Parallel);
+    }
+
+    #[test]
+    fn scan_brackets_and_braces() {
+        let kinds = token_kinds("[ ] { }");
+        assert_eq!(kinds[0], TokenKind::LBracket);
+        assert_eq!(kinds[1], TokenKind::RBracket);
+        assert_eq!(kinds[2], TokenKind::LBrace);
+        assert_eq!(kinds[3], TokenKind::RBrace);
+    }
+
+    #[test]
+    fn scan_arrow_and_fat_arrow() {
+        let kinds = token_kinds("-> =>");
+        assert_eq!(kinds[0], TokenKind::Arrow);
+        assert_eq!(kinds[1], TokenKind::FatArrow);
+    }
 }

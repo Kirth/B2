@@ -1,6 +1,9 @@
+use super::ast::{
+    CallArg, Expr, ImportItem, ImportSource, InterpPart, MatchArm, MatchArmKind, ParamSpec,
+    Pattern, Program, RecordField, Span, Stmt,
+};
 use crate::lexer::token::{Token, TokenKind};
 use crate::runtime::value::Value;
-use super::ast::{CallArg, Expr, ImportItem, ImportSource, InterpPart, MatchArm, MatchArmKind, ParamSpec, Pattern, Program, RecordField, Span, Stmt};
 
 pub struct Parser<'a> {
     tokens: Vec<Token>,
@@ -11,13 +14,20 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: Vec<Token>, source: &'a str, filename: String) -> Self {
-        Parser { tokens, current: 0, source, filename }
+        Parser {
+            tokens,
+            current: 0,
+            source,
+            filename,
+        }
     }
 
     pub fn parse_program(&mut self) -> Result<Program, String> {
         let mut statements = Vec::new();
         while !self.is_at_end() {
-            if self.match_kind(&TokenKind::Semicolon) { continue; }
+            if self.match_kind(&TokenKind::Semicolon) {
+                continue;
+            }
             statements.push(self.parse_stmt()?);
         }
         Ok(Program { statements })
@@ -27,14 +37,21 @@ impl<'a> Parser<'a> {
         if self.match_kind(&TokenKind::Let) {
             let span = self.prev_span();
             // Destructuring if next tokens indicate a pattern
-            if self.check(&TokenKind::LParen) || self.check(&TokenKind::Underscore) || self.check(&TokenKind::Identifier(String::new())) {
+            if self.check(&TokenKind::LParen)
+                || self.check(&TokenKind::Underscore)
+                || self.check(&TokenKind::Identifier(String::new()))
+            {
                 // Peek for comma to distinguish simple let
                 let is_destructure = self.lookahead_has_comma_before_equal();
                 if is_destructure {
                     let pattern = self.parse_pattern_list()?;
                     self.consume(&TokenKind::Equal, "Expected '=' after pattern")?;
                     let expr = self.parse_expression()?;
-                    return Ok(Stmt::LetDestructure { pattern, expr, span });
+                    return Ok(Stmt::LetDestructure {
+                        pattern,
+                        expr,
+                        span,
+                    });
                 }
             }
             let name = self.consume_identifier("Expected variable name after 'let'")?;
@@ -66,9 +83,15 @@ impl<'a> Parser<'a> {
             let value = if values.len() == 1 {
                 values.remove(0)
             } else {
-                Expr::Tuple { items: values, span }
+                Expr::Tuple {
+                    items: values,
+                    span,
+                }
             };
-            return Ok(Stmt::Return { value: Some(value), span });
+            return Ok(Stmt::Return {
+                value: Some(value),
+                span,
+            });
         }
         if self.match_kind(&TokenKind::Yield) {
             let span = self.prev_span();
@@ -155,12 +178,20 @@ impl<'a> Parser<'a> {
         if self.match_kind(&TokenKind::Log) {
             let span = self.prev_span();
             let expr = self.parse_expression()?;
-            return Ok(Stmt::Invoke { name: "log".to_string(), expr, span });
+            return Ok(Stmt::Invoke {
+                name: "log".to_string(),
+                expr,
+                span,
+            });
         }
         if self.match_kind(&TokenKind::Echo) {
             let span = self.prev_span();
             let expr = self.parse_expression()?;
-            return Ok(Stmt::Invoke { name: "echo".to_string(), expr, span });
+            return Ok(Stmt::Invoke {
+                name: "echo".to_string(),
+                expr,
+                span,
+            });
         }
 
         // assignment or expression
@@ -171,14 +202,22 @@ impl<'a> Parser<'a> {
                 let span = assignable.span();
                 return match assignable {
                     Expr::Var { name, .. } => Ok(Stmt::Assign { name, expr, span }),
-                    Expr::Index { object, index, .. } => Ok(Stmt::IndexAssign { target: *object, index: *index, expr, span }),
+                    Expr::Index { object, index, .. } => Ok(Stmt::IndexAssign {
+                        target: *object,
+                        index: *index,
+                        expr,
+                        span,
+                    }),
                     _ => Err(self.error_at_current("Invalid assignment target")),
                 };
             }
         }
         self.current = saved;
         let expr = self.parse_expression()?;
-        Ok(Stmt::Expr { expr: expr.clone(), span: expr.span() })
+        Ok(Stmt::Expr {
+            expr: expr.clone(),
+            span: expr.span(),
+        })
     }
 
     fn parse_function_stmt(&mut self) -> Result<Stmt, String> {
@@ -256,7 +295,12 @@ impl<'a> Parser<'a> {
         } else {
             Vec::new()
         };
-        Ok(Stmt::If { cond, then_branch, else_branch, span })
+        Ok(Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            span,
+        })
     }
 
     fn parse_for_stmt(&mut self) -> Result<Stmt, String> {
@@ -268,7 +312,12 @@ impl<'a> Parser<'a> {
         }
         let iterable = self.parse_expression()?;
         let body = self.parse_block()?;
-        Ok(Stmt::For { pattern, iterable, body, span })
+        Ok(Stmt::For {
+            pattern,
+            iterable,
+            body,
+            span,
+        })
     }
 
     fn parse_parallel_for_stmt(&mut self) -> Result<Stmt, String> {
@@ -281,7 +330,12 @@ impl<'a> Parser<'a> {
         }
         let iterable = self.parse_expression()?;
         let body = self.parse_block()?;
-        Ok(Stmt::ParallelFor { pattern, iterable, body, span })
+        Ok(Stmt::ParallelFor {
+            pattern,
+            iterable,
+            body,
+            span,
+        })
     }
 
     fn parse_parallel_for_expr(&mut self) -> Result<Expr, String> {
@@ -294,7 +348,12 @@ impl<'a> Parser<'a> {
         }
         let iterable = self.parse_expression()?;
         let body = self.parse_block()?;
-        Ok(Expr::ParallelFor { pattern, iterable: Box::new(iterable), body, span })
+        Ok(Expr::ParallelFor {
+            pattern,
+            iterable: Box::new(iterable),
+            body,
+            span,
+        })
     }
 
     fn parse_while_stmt(&mut self) -> Result<Stmt, String> {
@@ -312,7 +371,11 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        Ok(Stmt::Use { module, alias, span })
+        Ok(Stmt::Use {
+            module,
+            alias,
+            span,
+        })
     }
 
     fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
@@ -322,14 +385,22 @@ impl<'a> Parser<'a> {
             let alias = self.consume_identifier("Expected alias name after 'as'")?;
             self.consume(&TokenKind::From, "Expected 'from' in import statement")?;
             let source = self.parse_import_source()?;
-            return Ok(Stmt::ImportNamespace { alias, source, span });
+            return Ok(Stmt::ImportNamespace {
+                alias,
+                source,
+                span,
+            });
         }
 
         if self.match_kind(&TokenKind::LBrace) {
             let items = self.parse_import_items()?;
             self.consume(&TokenKind::From, "Expected 'from' in import statement")?;
             let source = self.parse_import_source()?;
-            return Ok(Stmt::ImportNamed { items, source, span });
+            return Ok(Stmt::ImportNamed {
+                items,
+                source,
+                span,
+            });
         }
 
         let name = self.consume_identifier("Expected imported symbol after 'import'")?;
@@ -392,7 +463,12 @@ impl<'a> Parser<'a> {
             let op = self.previous_lexeme();
             let right = self.parse_and()?;
             let span = expr.span();
-            expr = Expr::Binary { left: Box::new(expr), op, right: Box::new(right), span };
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op,
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(expr)
     }
@@ -403,7 +479,12 @@ impl<'a> Parser<'a> {
             let op = self.previous_lexeme();
             let right = self.parse_equality()?;
             let span = expr.span();
-            expr = Expr::Binary { left: Box::new(expr), op, right: Box::new(right), span };
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op,
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(expr)
     }
@@ -414,18 +495,33 @@ impl<'a> Parser<'a> {
             let op = self.previous_lexeme();
             let right = self.parse_comparison()?;
             let span = expr.span();
-            expr = Expr::Binary { left: Box::new(expr), op, right: Box::new(right), span };
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op,
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(expr)
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_term()?;
-        while self.match_any(&[TokenKind::Less, TokenKind::LessEqual, TokenKind::Greater, TokenKind::GreaterEqual]) {
+        while self.match_any(&[
+            TokenKind::Less,
+            TokenKind::LessEqual,
+            TokenKind::Greater,
+            TokenKind::GreaterEqual,
+        ]) {
             let op = self.previous_lexeme();
             let right = self.parse_term()?;
             let span = expr.span();
-            expr = Expr::Binary { left: Box::new(expr), op, right: Box::new(right), span };
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op,
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(expr)
     }
@@ -436,7 +532,12 @@ impl<'a> Parser<'a> {
             let op = self.previous_lexeme();
             let right = self.parse_factor()?;
             let span = expr.span();
-            expr = Expr::Binary { left: Box::new(expr), op, right: Box::new(right), span };
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op,
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(expr)
     }
@@ -447,7 +548,12 @@ impl<'a> Parser<'a> {
             let op = self.previous_lexeme();
             let right = self.parse_unary()?;
             let span = expr.span();
-            expr = Expr::Binary { left: Box::new(expr), op, right: Box::new(right), span };
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op,
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(expr)
     }
@@ -457,13 +563,21 @@ impl<'a> Parser<'a> {
             let span = self.prev_span();
             let safe = self.match_kind(&TokenKind::Question);
             let expr = self.parse_unary()?;
-            return Ok(Expr::Await { expr: Box::new(expr), safe, span });
+            return Ok(Expr::Await {
+                expr: Box::new(expr),
+                safe,
+                span,
+            });
         }
         if self.match_any(&[TokenKind::Bang, TokenKind::Minus]) {
             let op = self.previous_lexeme();
             let span = self.prev_span();
             let expr = self.parse_unary()?;
-            return Ok(Expr::Unary { op, expr: Box::new(expr), span });
+            return Ok(Expr::Unary {
+                op,
+                expr: Box::new(expr),
+                span,
+            });
         }
         self.parse_postfix()
     }
@@ -486,33 +600,53 @@ impl<'a> Parser<'a> {
             if self.match_kind(&TokenKind::Dot) {
                 let span = self.prev_span();
                 let name = self.consume_identifier("Expected member name after '.'")?;
-                expr = Expr::Member { object: Box::new(expr), name, span };
+                expr = Expr::Member {
+                    object: Box::new(expr),
+                    name,
+                    span,
+                };
                 continue;
             }
             if self.match_kind(&TokenKind::ColonColon) {
                 let span = self.prev_span();
                 let name = self.consume_identifier("Expected namespace member after '::'")?;
-                expr = Expr::NamespaceMember { object: Box::new(expr), name, span };
+                expr = Expr::NamespaceMember {
+                    object: Box::new(expr),
+                    name,
+                    span,
+                };
                 continue;
             }
             if self.match_kind(&TokenKind::LParen) {
                 let span = self.prev_span();
                 let args = self.parse_arguments()?;
                 self.consume(&TokenKind::RParen, "Expected ')' after arguments")?;
-                expr = Expr::Call { callee: Box::new(expr), args, span };
+                expr = Expr::Call {
+                    callee: Box::new(expr),
+                    args,
+                    span,
+                };
                 continue;
             }
             if self.match_kind(&TokenKind::LBracket) {
                 let span = self.prev_span();
                 let index = self.parse_expression()?;
                 self.consume(&TokenKind::RBracket, "Expected ']' after index")?;
-                expr = Expr::Index { object: Box::new(expr), index: Box::new(index), span };
+                expr = Expr::Index {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    span,
+                };
                 continue;
             }
             if self.match_kind(&TokenKind::DotDot) {
                 let span = self.prev_span();
                 let end = self.parse_expression()?;
-                expr = Expr::Range { start: Box::new(expr), end: Box::new(end), span };
+                expr = Expr::Range {
+                    start: Box::new(expr),
+                    end: Box::new(end),
+                    span,
+                };
                 continue;
             }
             break;
@@ -536,7 +670,10 @@ impl<'a> Parser<'a> {
             }
             return Err(self.error_at_current("Expected ',' or '}' in record constructor"));
         }
-        self.consume(&TokenKind::RBrace, "Expected '}' after record constructor fields")?;
+        self.consume(
+            &TokenKind::RBrace,
+            "Expected '}' after record constructor fields",
+        )?;
         Ok(args)
     }
 
@@ -561,29 +698,46 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Result<Expr, String> {
         if self.match_kind(&TokenKind::True) {
             let span = self.prev_span();
-            return Ok(Expr::Literal { value: Value::Bool(true), span });
+            return Ok(Expr::Literal {
+                value: Value::Bool(true),
+                span,
+            });
         }
         if self.match_kind(&TokenKind::False) {
             let span = self.prev_span();
-            return Ok(Expr::Literal { value: Value::Bool(false), span });
+            return Ok(Expr::Literal {
+                value: Value::Bool(false),
+                span,
+            });
         }
         if self.match_kind(&TokenKind::Number(String::new())) {
             if let TokenKind::Number(text) = self.previous().kind.clone() {
                 let span = self.prev_span();
-                let val: f64 = text.parse().map_err(|_| self.error_at_current("Invalid number"))?;
-                return Ok(Expr::Literal { value: Value::Number(val), span });
+                let val: f64 = text
+                    .parse()
+                    .map_err(|_| self.error_at_current("Invalid number"))?;
+                return Ok(Expr::Literal {
+                    value: Value::Number(val),
+                    span,
+                });
             }
         }
         if self.match_kind(&TokenKind::TimeLiteral(String::new())) {
             if let TokenKind::TimeLiteral(text) = self.previous().kind.clone() {
                 let span = self.prev_span();
-                return Ok(Expr::Literal { value: Value::Duration(Value::parse_duration(&text)?), span });
+                return Ok(Expr::Literal {
+                    value: Value::Duration(Value::parse_duration(&text)?),
+                    span,
+                });
             }
         }
         if self.match_kind(&TokenKind::String(String::new())) {
             if let TokenKind::String(text) = self.previous().kind.clone() {
                 let span = self.prev_span();
-                return Ok(Expr::Literal { value: Value::String(text), span });
+                return Ok(Expr::Literal {
+                    value: Value::String(text),
+                    span,
+                });
             }
         }
         if self.match_kind(&TokenKind::InterpolatedString(String::new())) {
@@ -609,8 +763,17 @@ impl<'a> Parser<'a> {
             let span = self.prev_span();
             let cond = self.parse_expression()?;
             let then_branch = self.parse_block()?;
-            let else_branch = if self.match_kind(&TokenKind::Else) { self.parse_block()? } else { Vec::new() };
-            return Ok(Expr::IfExpr { cond: Box::new(cond), then_branch, else_branch, span });
+            let else_branch = if self.match_kind(&TokenKind::Else) {
+                self.parse_block()?
+            } else {
+                Vec::new()
+            };
+            return Ok(Expr::IfExpr {
+                cond: Box::new(cond),
+                then_branch,
+                else_branch,
+                span,
+            });
         }
         if self.match_kind(&TokenKind::Match) {
             return self.parse_match_expr();
@@ -628,18 +791,28 @@ impl<'a> Parser<'a> {
                 let mut args = self.parse_arguments()?;
                 self.consume(&TokenKind::RParen, "Expected ')' after task arguments")?;
                 if args.is_empty() {
-                    return Err(self.error_at_current("task(...) expects callable as first argument"));
+                    return Err(
+                        self.error_at_current("task(...) expects callable as first argument")
+                    );
                 }
                 let callee = match args.remove(0) {
                     CallArg::Positional(expr) => expr,
                     CallArg::Spread(_) => {
-                        return Err(self.error_at_current("task(...) expects callable as first positional argument"));
+                        return Err(self.error_at_current(
+                            "task(...) expects callable as first positional argument",
+                        ));
                     }
                     CallArg::Named { .. } => {
-                        return Err(self.error_at_current("task(...) expects callable as first positional argument"));
+                        return Err(self.error_at_current(
+                            "task(...) expects callable as first positional argument",
+                        ));
                     }
                 };
-                return Ok(Expr::TaskCall { callee: Box::new(callee), args, span });
+                return Ok(Expr::TaskCall {
+                    callee: Box::new(callee),
+                    args,
+                    span,
+                });
             }
             return Err(self.error_at_current("Expected '{' or '(' after 'task'"));
         }
@@ -654,7 +827,12 @@ impl<'a> Parser<'a> {
                 None
             };
             let body = self.parse_block()?;
-            return Ok(Expr::Lambda { params, return_type, body, span });
+            return Ok(Expr::Lambda {
+                params,
+                return_type,
+                body,
+                span,
+            });
         }
         if self.match_kind(&TokenKind::Sh) {
             let span = self.prev_span();
@@ -663,7 +841,10 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_expression()?
             };
-            return Ok(Expr::Sh { command: Box::new(command), span });
+            return Ok(Expr::Sh {
+                command: Box::new(command),
+                span,
+            });
         }
         if self.match_kind(&TokenKind::Ssh) {
             let span = self.prev_span();
@@ -673,7 +854,11 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_expression()?
             };
-            return Ok(Expr::Ssh { host: Box::new(host), command: Box::new(command), span });
+            return Ok(Expr::Ssh {
+                host: Box::new(host),
+                command: Box::new(command),
+                span,
+            });
         }
         if self.match_kind(&TokenKind::LParen) {
             let span = self.prev_span();
@@ -699,7 +884,10 @@ impl<'a> Parser<'a> {
             }
             let elements = self.parse_elements()?;
             self.consume(&TokenKind::RBracket, "Expected ']' after array")?;
-            return Ok(Expr::Array { items: elements, span });
+            return Ok(Expr::Array {
+                items: elements,
+                span,
+            });
         }
         if self.match_kind(&TokenKind::LBrace) {
             let span = self.prev_span();
@@ -769,7 +957,11 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        Ok(Expr::Match { subject: Box::new(subject), arms, span })
+        Ok(Expr::Match {
+            subject: Box::new(subject),
+            arms,
+            span,
+        })
     }
 
     fn parse_array_comprehension(&mut self, span: Span) -> Result<Expr, String> {
@@ -786,7 +978,10 @@ impl<'a> Parser<'a> {
         };
         self.consume(&TokenKind::FatArrow, "Expected '=>' in array comprehension")?;
         let map_expr = self.parse_expression()?;
-        self.consume(&TokenKind::RBracket, "Expected ']' after array comprehension")?;
+        self.consume(
+            &TokenKind::RBracket,
+            "Expected ']' after array comprehension",
+        )?;
         Ok(Expr::ArrayComprehension {
             pattern,
             iterable: Box::new(iterable),
@@ -801,7 +996,10 @@ impl<'a> Parser<'a> {
             return self.parse_block();
         }
         let expr = self.parse_expression()?;
-        Ok(vec![Stmt::Expr { expr: expr.clone(), span: expr.span() }])
+        Ok(vec![Stmt::Expr {
+            expr: expr.clone(),
+            span: expr.span(),
+        }])
     }
 
     fn parse_param_list(&mut self) -> Result<Vec<ParamSpec>, String> {
@@ -812,7 +1010,9 @@ impl<'a> Parser<'a> {
             loop {
                 let variadic = self.match_kind(&TokenKind::Ellipsis);
                 if saw_variadic {
-                    return Err(self.error_at_current("Variadic parameter must be the final parameter"));
+                    return Err(
+                        self.error_at_current("Variadic parameter must be the final parameter")
+                    );
                 }
                 let name = self.consume_identifier("Expected parameter name")?;
                 let ty = if self.match_kind(&TokenKind::Colon) {
@@ -822,7 +1022,9 @@ impl<'a> Parser<'a> {
                 };
                 let default = if self.match_kind(&TokenKind::Equal) {
                     if variadic {
-                        return Err(self.error_at_current("Variadic parameter cannot have a default value"));
+                        return Err(
+                            self.error_at_current("Variadic parameter cannot have a default value")
+                        );
                     }
                     saw_default = true;
                     Some(self.parse_expression()?)
@@ -833,10 +1035,19 @@ impl<'a> Parser<'a> {
                     saw_variadic = true;
                 }
                 if saw_default && default.is_none() {
-                    return Err(self.error_at_current("Required parameters cannot follow parameters with defaults"));
+                    return Err(self.error_at_current(
+                        "Required parameters cannot follow parameters with defaults",
+                    ));
                 }
-                params.push(ParamSpec { name, ty, default, variadic });
-                if !self.match_kind(&TokenKind::Comma) { break; }
+                params.push(ParamSpec {
+                    name,
+                    ty,
+                    default,
+                    variadic,
+                });
+                if !self.match_kind(&TokenKind::Comma) {
+                    break;
+                }
             }
         }
         Ok(params)
@@ -855,7 +1066,9 @@ impl<'a> Parser<'a> {
                     args.push(CallArg::Named { name, value });
                 } else {
                     if saw_named {
-                        return Err(self.error_at_current("Positional arguments cannot appear after named arguments"));
+                        return Err(self.error_at_current(
+                            "Positional arguments cannot appear after named arguments",
+                        ));
                     }
                     if self.match_kind(&TokenKind::Ellipsis) {
                         let spread_expr = self.parse_expression()?;
@@ -864,7 +1077,9 @@ impl<'a> Parser<'a> {
                         args.push(CallArg::Positional(self.parse_expression()?));
                     }
                 }
-                if !self.match_kind(&TokenKind::Comma) { break; }
+                if !self.match_kind(&TokenKind::Comma) {
+                    break;
+                }
             }
         }
         Ok(args)
@@ -875,7 +1090,9 @@ impl<'a> Parser<'a> {
         if !self.check(&TokenKind::RBracket) {
             loop {
                 elements.push(self.parse_expression()?);
-                if !self.match_kind(&TokenKind::Comma) { break; }
+                if !self.match_kind(&TokenKind::Comma) {
+                    break;
+                }
             }
         }
         Ok(elements)
@@ -889,23 +1106,32 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenKind::Colon, "Expected ':' in dict")?;
                 let value = self.parse_expression()?;
                 pairs.push((key, value));
-                if !self.match_kind(&TokenKind::Comma) { break; }
+                if !self.match_kind(&TokenKind::Comma) {
+                    break;
+                }
             }
         }
         Ok(pairs)
     }
 
     fn parse_dict_key(&mut self) -> Result<Expr, String> {
-        if self.check(&TokenKind::Identifier(String::new())) && matches!(self.peek_next().kind, TokenKind::Colon) {
+        if self.check(&TokenKind::Identifier(String::new()))
+            && matches!(self.peek_next().kind, TokenKind::Colon)
+        {
             let key = self.consume_identifier("Expected dict key")?;
             let span = self.prev_span();
-            return Ok(Expr::Literal { value: Value::String(key), span });
+            return Ok(Expr::Literal {
+                value: Value::String(key),
+                span,
+            });
         }
         self.parse_expression()
     }
 
     fn is_dict_start(&self) -> bool {
-        if self.check(&TokenKind::RBrace) { return true; }
+        if self.check(&TokenKind::RBrace) {
+            return true;
+        }
         match &self.peek().kind {
             TokenKind::Identifier(_) | TokenKind::String(_) => {
                 matches!(self.peek_next().kind, TokenKind::Colon)
@@ -931,8 +1157,11 @@ impl<'a> Parser<'a> {
         let bytes = self.source.as_bytes();
         while pos < bytes.len() && depth > 0 {
             let c = bytes[pos] as char;
-            if c == '{' { depth += 1; }
-            else if c == '}' { depth -= 1; }
+            if c == '{' {
+                depth += 1;
+            } else if c == '}' {
+                depth -= 1;
+            }
             pos += 1;
         }
         if depth != 0 {
@@ -945,9 +1174,15 @@ impl<'a> Parser<'a> {
 
         if raw.contains("#{") {
             let parts = self.parse_interpolated_string(raw)?;
-            Ok(Expr::InterpolatedString { parts, span: self.span_from_token(&open) })
+            Ok(Expr::InterpolatedString {
+                parts,
+                span: self.span_from_token(&open),
+            })
         } else {
-            Ok(Expr::Literal { value: Value::String(raw.trim().to_string()), span: self.span_from_token(&open) })
+            Ok(Expr::Literal {
+                value: Value::String(raw.trim().to_string()),
+                span: self.span_from_token(&open),
+            })
         }
     }
 
@@ -964,8 +1199,12 @@ impl<'a> Parser<'a> {
                 let mut depth = 1;
                 while j < raw.len() && depth > 0 {
                     let ch = raw.as_bytes()[j] as char;
-                    if ch == '{' { depth += 1; }
-                    if ch == '}' { depth -= 1; }
+                    if ch == '{' {
+                        depth += 1;
+                    }
+                    if ch == '}' {
+                        depth -= 1;
+                    }
                     j += 1;
                 }
                 if depth != 0 {
@@ -992,7 +1231,12 @@ impl<'a> Parser<'a> {
         self.consume(&TokenKind::Arrow, "Expected '->' after parameter")?;
         let body = self.parse_lambda_body()?;
         Ok(Expr::Lambda {
-            params: vec![ParamSpec { name: param, ty: None, default: None, variadic: false }],
+            params: vec![ParamSpec {
+                name: param,
+                ty: None,
+                default: None,
+                variadic: false,
+            }],
             return_type: None,
             body,
             span,
@@ -1006,7 +1250,12 @@ impl<'a> Parser<'a> {
         self.consume(&TokenKind::RParen, "Expected ')' after lambda params")?;
         self.consume(&TokenKind::Arrow, "Expected '->' after lambda params")?;
         let body = self.parse_lambda_body()?;
-        Ok(Expr::Lambda { params, return_type: None, body, span })
+        Ok(Expr::Lambda {
+            params,
+            return_type: None,
+            body,
+            span,
+        })
     }
 
     fn parse_lambda_body(&mut self) -> Result<Vec<Stmt>, String> {
@@ -1014,7 +1263,10 @@ impl<'a> Parser<'a> {
             return self.parse_block();
         }
         let expr = self.parse_expression()?;
-        Ok(vec![Stmt::Return { value: Some(expr.clone()), span: expr.span() }])
+        Ok(vec![Stmt::Return {
+            value: Some(expr.clone()),
+            span: expr.span(),
+        }])
     }
 
     fn parse_type(&mut self) -> Result<super::ast::TypeExpr, String> {
@@ -1073,7 +1325,9 @@ impl<'a> Parser<'a> {
                 if !self.check(&TokenKind::Greater) {
                     loop {
                         args.push(self.parse_type()?);
-                        if !self.match_kind(&TokenKind::Comma) { break; }
+                        if !self.match_kind(&TokenKind::Comma) {
+                            break;
+                        }
                     }
                 }
                 self.consume(&TokenKind::Greater, "Expected '>' after fn")?;
@@ -1106,7 +1360,9 @@ impl<'a> Parser<'a> {
             if !self.check(&TokenKind::RParen) {
                 loop {
                     parts.push(self.parse_pattern()?);
-                    if !self.match_kind(&TokenKind::Comma) { break; }
+                    if !self.match_kind(&TokenKind::Comma) {
+                        break;
+                    }
                 }
             }
             self.consume(&TokenKind::RParen, "Expected ')' after pattern")?;
@@ -1140,13 +1396,19 @@ impl<'a> Parser<'a> {
             let index = self.parse_expression()?;
             self.consume(&TokenKind::RBracket, "Expected ']' after index")?;
             let span = e.span();
-            e = Expr::Index { object: Box::new(e), index: Box::new(index), span };
+            e = Expr::Index {
+                object: Box::new(e),
+                index: Box::new(index),
+                span,
+            };
         }
         Ok(e)
     }
 
     fn consume(&mut self, kind: &TokenKind, message: &str) -> Result<Token, String> {
-        if self.check(kind) { return Ok(self.advance().clone()); }
+        if self.check(kind) {
+            return Ok(self.advance().clone());
+        }
         Err(self.error_at_current(message))
     }
 
@@ -1159,23 +1421,35 @@ impl<'a> Parser<'a> {
     }
 
     fn match_kind(&mut self, kind: &TokenKind) -> bool {
-        if self.check(kind) { self.advance(); true } else { false }
+        if self.check(kind) {
+            self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     fn match_any(&mut self, kinds: &[TokenKind]) -> bool {
         for k in kinds {
-            if self.check(k) { self.advance(); return true; }
+            if self.check(k) {
+                self.advance();
+                return true;
+            }
         }
         false
     }
 
     fn check(&self, kind: &TokenKind) -> bool {
-        if self.is_at_end() { return false; }
+        if self.is_at_end() {
+            return false;
+        }
         std::mem::discriminant(&self.peek().kind) == std::mem::discriminant(kind)
     }
 
     fn advance(&mut self) -> &Token {
-        if !self.is_at_end() { self.current += 1; }
+        if !self.is_at_end() {
+            self.current += 1;
+        }
         self.previous()
     }
 
@@ -1188,7 +1462,11 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_next(&self) -> &Token {
-        if self.current + 1 >= self.tokens.len() { self.peek() } else { &self.tokens[self.current + 1] }
+        if self.current + 1 >= self.tokens.len() {
+            self.peek()
+        } else {
+            &self.tokens[self.current + 1]
+        }
     }
 
     fn previous(&self) -> &Token {
@@ -1233,7 +1511,10 @@ impl<'a> Parser<'a> {
     }
 
     fn span_from_token(&self, tok: &Token) -> Span {
-        Span { line: tok.line, col: tok.column }
+        Span {
+            line: tok.line,
+            col: tok.column,
+        }
     }
 
     fn peek_next_is_arrow(&self) -> bool {
@@ -1270,7 +1551,9 @@ impl<'a> Parser<'a> {
 
 fn parse_expression_from_str(expr_text: &str, filename: &str) -> Result<Expr, String> {
     let mut scanner = crate::lexer::scanner::Scanner::new(expr_text);
-    let tokens = scanner.scan_tokens().map_err(|e| format!("{filename}: {e}"))?;
+    let tokens = scanner
+        .scan_tokens()
+        .map_err(|e| format!("{filename}: {e}"))?;
     let mut parser = Parser::new(tokens, expr_text, filename.to_string());
     parser.parse_expression()
 }
@@ -1317,10 +1600,11 @@ fn stmt_contains_yield(stmt: &Stmt) -> bool {
         | Stmt::Throw { value: expr, .. }
         | Stmt::Invoke { expr, .. } => expr_contains_yield(expr),
         Stmt::IndexAssign {
-            target, index, expr, ..
-        } => {
-            expr_contains_yield(target) || expr_contains_yield(index) || expr_contains_yield(expr)
-        }
+            target,
+            index,
+            expr,
+            ..
+        } => expr_contains_yield(target) || expr_contains_yield(index) || expr_contains_yield(expr),
         Stmt::Return { value: None, .. }
         | Stmt::Continue { .. }
         | Stmt::Break { .. }
@@ -1344,8 +1628,12 @@ fn expr_contains_yield(expr: &Expr) -> bool {
                     CallArg::Named { value, .. } => expr_contains_yield(value),
                 })
         }
-        Expr::Member { object, .. } | Expr::NamespaceMember { object, .. } => expr_contains_yield(object),
-        Expr::Index { object, index, .. } => expr_contains_yield(object) || expr_contains_yield(index),
+        Expr::Member { object, .. } | Expr::NamespaceMember { object, .. } => {
+            expr_contains_yield(object)
+        }
+        Expr::Index { object, index, .. } => {
+            expr_contains_yield(object) || expr_contains_yield(index)
+        }
         Expr::Array { items, .. } | Expr::Tuple { items, .. } => {
             items.iter().any(expr_contains_yield)
         }
@@ -1371,16 +1659,22 @@ fn expr_contains_yield(expr: &Expr) -> bool {
             then_branch,
             else_branch,
             ..
-        } => expr_contains_yield(cond) || contains_yield(then_branch) || contains_yield(else_branch),
+        } => {
+            expr_contains_yield(cond) || contains_yield(then_branch) || contains_yield(else_branch)
+        }
         Expr::Match { subject, arms, .. } => {
             expr_contains_yield(subject)
                 || arms.iter().any(|arm| match &arm.kind {
                     MatchArmKind::Value(e) => expr_contains_yield(e) || contains_yield(&arm.body),
-                    MatchArmKind::Compare { rhs, .. } => expr_contains_yield(rhs) || contains_yield(&arm.body),
+                    MatchArmKind::Compare { rhs, .. } => {
+                        expr_contains_yield(rhs) || contains_yield(&arm.body)
+                    }
                     MatchArmKind::Wildcard => contains_yield(&arm.body),
                 })
         }
-        Expr::ParallelFor { iterable, body, .. } => expr_contains_yield(iterable) || contains_yield(body),
+        Expr::ParallelFor { iterable, body, .. } => {
+            expr_contains_yield(iterable) || contains_yield(body)
+        }
         Expr::TaskBlock { .. } => false,
         Expr::TaskCall { callee, args, .. } => {
             expr_contains_yield(callee)
@@ -1396,7 +1690,9 @@ fn expr_contains_yield(expr: &Expr) -> bool {
             InterpPart::Expr(e) => expr_contains_yield(e),
         }),
         Expr::Sh { command, .. } => expr_contains_yield(command),
-        Expr::Ssh { host, command, .. } => expr_contains_yield(host) || expr_contains_yield(command),
+        Expr::Ssh { host, command, .. } => {
+            expr_contains_yield(host) || expr_contains_yield(command)
+        }
         Expr::Literal { .. } | Expr::Var { .. } => false,
     }
 }
@@ -1417,5 +1713,94 @@ fn shorten(s: &str) -> String {
         format!("{}...", &s[..16])
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Parser;
+    use crate::lexer::scanner::Scanner;
+    use crate::parser::ast::Stmt;
+
+    fn parse_program(source: &str) -> Result<crate::parser::ast::Program, String> {
+        let mut scanner = Scanner::new(source);
+        let tokens = scanner.scan_tokens()?;
+        let mut parser = Parser::new(tokens, source, "<test>".to_string());
+        parser.parse_program()
+    }
+
+    fn parse_program_ok(source: &str) -> crate::parser::ast::Program {
+        parse_program(source).unwrap()
+    }
+
+    #[test]
+    fn parse_let() {
+        let program = parse_program_ok("let x = 1");
+        assert_eq!(program.statements.len(), 1);
+        assert!(matches!(&program.statements[0], Stmt::Let { name, .. } if name == "x"));
+    }
+
+    #[test]
+    fn parse_fn() {
+        let program = parse_program_ok("fn add(a, b) { return a + b }");
+        assert_eq!(program.statements.len(), 1);
+        assert!(matches!(&program.statements[0], Stmt::Function { name, .. } if name == "add"));
+    }
+
+    #[test]
+    fn parse_expr_stmt() {
+        // "log 42" is parsed as Stmt::Invoke (log is a keyword), not a bare Expr
+        let program = parse_program_ok("log 42");
+        assert_eq!(program.statements.len(), 1);
+        assert!(matches!(&program.statements[0], Stmt::Invoke { name, .. } if name == "log"));
+        // A bare expression like "1 + 2" becomes Stmt::Expr
+        let program2 = parse_program_ok("1 + 2");
+        assert_eq!(program2.statements.len(), 1);
+        assert!(matches!(&program2.statements[0], Stmt::Expr { .. }));
+    }
+
+    #[test]
+    fn parse_multiple_stmts() {
+        let program = parse_program_ok("let a = 1; let b = 2");
+        assert_eq!(program.statements.len(), 2);
+    }
+
+    #[test]
+    fn parse_if_stmt() {
+        let program = parse_program_ok("if true { log 1 }");
+        assert_eq!(program.statements.len(), 1);
+        assert!(matches!(&program.statements[0], Stmt::If { .. }));
+    }
+
+    #[test]
+    fn parse_for_stmt() {
+        let program = parse_program_ok("for x in [1,2,3] { log x }");
+        assert_eq!(program.statements.len(), 1);
+        assert!(matches!(&program.statements[0], Stmt::For { .. }));
+    }
+
+    #[test]
+    fn parse_while_stmt() {
+        let program = parse_program_ok("while false { log 0 }");
+        assert_eq!(program.statements.len(), 1);
+        assert!(matches!(&program.statements[0], Stmt::While { .. }));
+    }
+
+    #[test]
+    fn parse_array_and_dict_expr() {
+        let program = parse_program_ok("let a = [1, 2]; let b = { \"k\": 1 }");
+        assert_eq!(program.statements.len(), 2);
+    }
+
+    #[test]
+    fn parse_lambda() {
+        let program = parse_program_ok("let f = x -> x + 1");
+        assert_eq!(program.statements.len(), 1);
+    }
+
+    #[test]
+    fn parse_invalid_fails() {
+        assert!(parse_program("let x = ").is_err());
+        assert!(parse_program("fn add( ").is_err());
     }
 }

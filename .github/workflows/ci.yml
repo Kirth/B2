@@ -1,0 +1,68 @@
+# CI runs test, clippy, and fmt. Uses rustup and run steps only (no Node-based actions) so it works with act.
+# Container is ubuntu:22.04 (has curl; node image has no curl). Cache omitted so we don't need Node. On Apple M-series: act --container-architecture linux/amd64
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install curl, build-essential, and Rust
+        run: |
+          apt-get update && apt-get install -y curl build-essential
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          "$HOME/.cargo/bin/rustup" component add rustfmt clippy
+
+      - name: cargo test
+        run: . "$HOME/.cargo/env" && cargo test
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install curl, build-essential, and Rust
+        run: |
+          apt-get update && apt-get install -y curl build-essential
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          "$HOME/.cargo/bin/rustup" component add clippy
+
+      - name: cargo clippy
+        run: . "$HOME/.cargo/env" && cargo clippy
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install curl, build-essential, and Rust
+        run: |
+          apt-get update && apt-get install -y curl build-essential
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          "$HOME/.cargo/bin/rustup" component add rustfmt
+
+      - name: cargo fmt --check
+        run: . "$HOME/.cargo/env" && cargo fmt --all -- --check

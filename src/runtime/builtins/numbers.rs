@@ -49,7 +49,10 @@ where
 fn expect_number(value: Option<&Value>) -> Result<f64, String> {
     match value {
         Some(Value::Number(n)) => Ok(*n),
-        Some(v) => v.as_string().parse::<f64>().map_err(|_| "Expected number argument".to_string()),
+        Some(v) => v
+            .as_string()
+            .parse::<f64>()
+            .map_err(|_| "Expected number argument".to_string()),
         None => Err("Expected number argument".to_string()),
     }
 }

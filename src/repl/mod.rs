@@ -6,13 +6,15 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::Terminal;
 
 use crate::lexer::scanner::Scanner;
 use crate::parser::parser::Parser;
@@ -40,9 +42,11 @@ pub fn run() -> Result<(), String> {
 
     enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {e}"))?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).map_err(|e| format!("Failed to enter alt screen: {e}"))?;
+    execute!(stdout, EnterAlternateScreen)
+        .map_err(|e| format!("Failed to enter alt screen: {e}"))?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).map_err(|e| format!("Failed to create terminal: {e}"))?;
+    let mut terminal =
+        Terminal::new(backend).map_err(|e| format!("Failed to create terminal: {e}"))?;
 
     let run_result = tui_loop(&mut terminal, &mut app);
 
@@ -108,7 +112,9 @@ impl ReplApp {
             output_exec_hint: None,
         };
         app.push_info("v2r repl");
-        app.push_info("Notebook mode: Enter newline | Ctrl+R / Ctrl+Enter / F5 run cell | Ctrl+D quit");
+        app.push_info(
+            "Notebook mode: Enter newline | Ctrl+R / Ctrl+Enter / F5 run cell | Ctrl+D quit",
+        );
         app
     }
 
@@ -120,7 +126,12 @@ impl ReplApp {
         self.push_entry_with_exec(kind, text, None);
     }
 
-    fn push_entry_with_exec(&mut self, kind: EntryKind, text: impl Into<String>, exec_id: Option<u64>) {
+    fn push_entry_with_exec(
+        &mut self,
+        kind: EntryKind,
+        text: impl Into<String>,
+        exec_id: Option<u64>,
+    ) {
         self.entries.push(ReplEntry {
             kind,
             text: text.into(),
@@ -178,7 +189,13 @@ impl ReplApp {
         self.output_exec_hint = None;
     }
 
-    fn eval_source(&mut self, filename: String, source: String, auto_print_result: bool, exec_id: u64) {
+    fn eval_source(
+        &mut self,
+        filename: String,
+        source: String,
+        auto_print_result: bool,
+        exec_id: u64,
+    ) {
         let start = Instant::now();
         self.executor.set_context(filename.clone(), source.clone());
 
@@ -374,7 +391,10 @@ impl ReplApp {
                 lines.push(Line::styled(format!("{prefix}{first}"), style));
             }
             for cont in iter {
-                lines.push(Line::styled(format!("{}{}", " ".repeat(prefix.len()), cont), style));
+                lines.push(Line::styled(
+                    format!("{}{}", " ".repeat(prefix.len()), cont),
+                    style,
+                ));
             }
         }
         let draft_prefix = format!("In [{}]: ", self.next_exec_id);
@@ -521,14 +541,18 @@ fn tui_loop(
                 continue;
             }
             match (key.code, key.modifiers) {
-                (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => app.should_quit = true,
+                (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    app.should_quit = true
+                }
                 (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                     app.input.clear();
                     app.input_cursor = 0;
                 }
                 (KeyCode::Char('f'), m) if m.contains(KeyModifiers::CONTROL) => app.move_right(),
                 (KeyCode::Char('b'), m) if m.contains(KeyModifiers::CONTROL) => app.move_left(),
-                (KeyCode::Char('a'), m) if m.contains(KeyModifiers::CONTROL) => app.move_line_start(),
+                (KeyCode::Char('a'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    app.move_line_start()
+                }
                 (KeyCode::Char('e'), m) if m.contains(KeyModifiers::CONTROL) => app.move_line_end(),
                 (KeyCode::Char('p'), m) if m.contains(KeyModifiers::CONTROL) => app.move_up(),
                 (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => app.move_down(),
@@ -642,7 +666,10 @@ fn notebook_cursor_position(app: &ReplApp) -> (usize, u16) {
 
     let prefix = format!("In [{}]: ", app.next_exec_id);
     let (_, _, col, line_offset) = line_bounds_and_col(&app.input, app.input_cursor);
-    (line_idx + line_offset, (prefix.chars().count() + col) as u16)
+    (
+        line_idx + line_offset,
+        (prefix.chars().count() + col) as u16,
+    )
 }
 
 fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
@@ -797,12 +824,16 @@ fn run_line_repl() -> Result<(), String> {
     let mut buffer = String::new();
 
     println!("v2r repl (line mode)");
-    println!("commands: :help :quit :clear :vars :load <file> :ast <code> :tokens <code> :time <on|off> :history export <path> :history import <path>");
+    println!(
+        "commands: :help :quit :clear :vars :load <file> :ast <code> :tokens <code> :time <on|off> :history export <path> :history import <path>"
+    );
 
     loop {
         let prompt = if buffer.is_empty() { "v2r> " } else { "...> " };
         print!("{prompt}");
-        io::stdout().flush().map_err(|e| format!("Failed to flush stdout: {e}"))?;
+        io::stdout()
+            .flush()
+            .map_err(|e| format!("Failed to flush stdout: {e}"))?;
 
         let mut line = String::new();
         let read = io::stdin()
@@ -921,12 +952,16 @@ fn line_mode_command(
 
     match cmd {
         "help" => {
-            println!(":help :quit :clear :vars :load <file> :ast <code> :tokens <code> :time <on|off> :history export <path> :history import <path>");
+            println!(
+                ":help :quit :clear :vars :load <file> :ast <code> :tokens <code> :time <on|off> :history export <path> :history import <path>"
+            );
         }
         "quit" | "q" | "exit" => return Ok(true),
         "clear" => {
             print!("\x1B[2J\x1B[1;1H");
-            io::stdout().flush().map_err(|e| format!("Failed to flush stdout: {e}"))?;
+            io::stdout()
+                .flush()
+                .map_err(|e| format!("Failed to flush stdout: {e}"))?;
         }
         "vars" => {
             let vars = executor.list_globals();
@@ -943,7 +978,14 @@ fn line_mode_command(
                 eprintln!("Usage: :load <file>");
             } else {
                 match fs::read_to_string(arg) {
-                    Ok(src) => line_mode_eval(executor, pending_output, arg.to_string(), src, false, *timing_enabled),
+                    Ok(src) => line_mode_eval(
+                        executor,
+                        pending_output,
+                        arg.to_string(),
+                        src,
+                        false,
+                        *timing_enabled,
+                    ),
                     Err(err) => eprintln!("Failed to read {arg}: {err}"),
                 }
             }
