@@ -13,10 +13,16 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
         "split" => native(move |args| {
             let sep = expect_string(args.get(0))?;
             if sep.is_empty() {
-                let parts: Vec<Value> = receiver.chars().map(|c| Value::String(c.to_string())).collect();
+                let parts: Vec<Value> = receiver
+                    .chars()
+                    .map(|c| Value::String(c.to_string()))
+                    .collect();
                 Ok(Value::Array(Arc::new(Mutex::new(parts))))
             } else {
-                let parts: Vec<Value> = receiver.split(&sep).map(|s| Value::String(s.to_string())).collect();
+                let parts: Vec<Value> = receiver
+                    .split(&sep)
+                    .map(|s| Value::String(s.to_string()))
+                    .collect();
                 Ok(Value::Array(Arc::new(Mutex::new(parts))))
             }
         }),
@@ -48,7 +54,9 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
             let start = expect_usize(args.get(0))?;
             let len = expect_usize(args.get(1))?;
             let chars: Vec<char> = receiver.chars().collect();
-            if start >= chars.len() { return Ok(Value::String("".to_string())); }
+            if start >= chars.len() {
+                return Ok(Value::String("".to_string()));
+            }
             let end = (start + len).min(chars.len());
             Ok(Value::String(chars[start..end].iter().collect()))
         }),
@@ -88,7 +96,9 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
             let start = expect_usize(args.get(0))?;
             let len = expect_usize(args.get(1))?;
             let chars: Vec<char> = receiver.chars().collect();
-            if start >= chars.len() { return Ok(Value::String(receiver.clone())); }
+            if start >= chars.len() {
+                return Ok(Value::String(receiver.clone()));
+            }
             let end = (start + len).min(chars.len());
             let mut out = String::new();
             out.push_str(&chars[..start].iter().collect::<String>());
@@ -102,9 +112,15 @@ pub fn get_method(name: &str, receiver: &str) -> Option<Value> {
             let len = chars.len() as isize;
             let mut s = if start < 0 { len + start } else { start };
             let mut e = if end < 0 { len + end } else { end };
-            if s < 0 { s = 0; }
-            if e < s { e = s; }
-            if s as usize >= chars.len() { return Ok(Value::String("".to_string())); }
+            if s < 0 {
+                s = 0;
+            }
+            if e < s {
+                e = s;
+            }
+            if s as usize >= chars.len() {
+                return Ok(Value::String("".to_string()));
+            }
             let e_usize = (e as usize).min(chars.len());
             Ok(Value::String(chars[s as usize..e_usize].iter().collect()))
         }),
@@ -141,7 +157,10 @@ fn expect_string_opt(value: Option<&Value>) -> Option<String> {
 fn expect_usize(value: Option<&Value>) -> Result<usize, String> {
     match value {
         Some(Value::Number(n)) => Ok(*n as usize),
-        Some(v) => v.as_string().parse::<usize>().map_err(|_| "Expected integer argument".to_string()),
+        Some(v) => v
+            .as_string()
+            .parse::<usize>()
+            .map_err(|_| "Expected integer argument".to_string()),
         None => Err("Expected integer argument".to_string()),
     }
 }
@@ -149,7 +168,10 @@ fn expect_usize(value: Option<&Value>) -> Result<usize, String> {
 fn expect_isize(value: Option<&Value>) -> Result<isize, String> {
     match value {
         Some(Value::Number(n)) => Ok(*n as isize),
-        Some(v) => v.as_string().parse::<isize>().map_err(|_| "Expected integer argument".to_string()),
+        Some(v) => v
+            .as_string()
+            .parse::<isize>()
+            .map_err(|_| "Expected integer argument".to_string()),
         None => Err("Expected integer argument".to_string()),
     }
 }

@@ -18,21 +18,43 @@ pub struct RuntimeError {
 }
 
 impl RuntimeError {
-    pub fn new(message: String, filename: String, line: usize, col: usize, snippet: Option<String>, stack: Vec<Frame>) -> Self {
-        RuntimeError { message, filename, line, col, snippet, stack }
+    pub fn new(
+        message: String,
+        filename: String,
+        line: usize,
+        col: usize,
+        snippet: Option<String>,
+        stack: Vec<Frame>,
+    ) -> Self {
+        RuntimeError {
+            message,
+            filename,
+            line,
+            col,
+            snippet,
+            stack,
+        }
     }
 }
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{}:{}:{}: {}", self.filename, self.line, self.col, self.message)?;
+        writeln!(
+            f,
+            "{}:{}:{}: {}",
+            self.filename, self.line, self.col, self.message
+        )?;
         if let Some(snippet) = &self.snippet {
             writeln!(f, "Snippet:\n{}", snippet)?;
         }
         if !self.stack.is_empty() {
             writeln!(f, "Stack trace:")?;
             for frame in &self.stack {
-                writeln!(f, "  at {} ({}:{}:{})", frame.name, self.filename, frame.line, frame.col)?;
+                writeln!(
+                    f,
+                    "  at {} ({}:{}:{})",
+                    frame.name, self.filename, frame.line, frame.col
+                )?;
             }
         }
         Ok(())

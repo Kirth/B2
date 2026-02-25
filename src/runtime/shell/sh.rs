@@ -12,9 +12,18 @@ pub fn run_sh(command: &str) -> Result<ShellResult, String> {
         .map_err(|e| format!("Failed to run shell: {e}"))?;
 
     let duration = start.elapsed();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim_end().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr)
+        .trim_end()
+        .to_string();
     let exit_code = output.status.code().unwrap_or(-1);
 
-    Ok(ShellResult { stdout, stderr, exit_code, duration })
+    Ok(ShellResult {
+        stdout,
+        stderr,
+        exit_code,
+        duration,
+    })
 }

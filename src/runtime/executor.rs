@@ -1,15 +1,22 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread;
 use std::time::Duration;
 
 use crate::lexer::scanner::Scanner;
-use crate::parser::ast::{CallArg, Expr, ImportSource, InterpPart, MatchArmKind, ParamSpec, Pattern, Program, RecordField, Span, Stmt, TypeExpr};
+use crate::parser::ast::{
+    CallArg, Expr, ImportSource, InterpPart, MatchArmKind, ParamSpec, Pattern, Program,
+    RecordField, Span, Stmt, TypeExpr,
+};
 use crate::parser::parser::Parser;
-use crate::runtime::errors::{Frame, RuntimeError};
 use crate::runtime::builtins::{numbers, strings};
+use crate::runtime::errors::{Frame, RuntimeError};
 use crate::runtime::shell::{sh::run_sh, ssh::run_ssh};
 use crate::runtime::value::{ModuleOrigin, ModuleValue, Value};
 
@@ -138,20 +145,17 @@ impl Executor {
     where
         F: Fn(Vec<Value>) -> Result<Value, String> + Send + Sync + 'static,
     {
-        self.scopes[0].insert(
-            name.to_string(),
-            Value::NativeFunction(Arc::new(func)),
-        );
+        self.scopes[0].insert(name.to_string(), Value::NativeFunction(Arc::new(func)));
     }
 
     pub fn register_native_exec<F>(&mut self, name: &str, func: F)
     where
-        F: Fn(&mut Executor, Vec<Value>, Span) -> Result<Value, RuntimeError> + Send + Sync + 'static,
+        F: Fn(&mut Executor, Vec<Value>, Span) -> Result<Value, RuntimeError>
+            + Send
+            + Sync
+            + 'static,
     {
-        self.scopes[0].insert(
-            name.to_string(),
-            Value::NativeFunctionExec(Arc::new(func)),
-        );
+        self.scopes[0].insert(name.to_string(), Value::NativeFunctionExec(Arc::new(func)));
     }
 
     #[allow(dead_code)]
@@ -165,13 +169,11 @@ impl Executor {
             exports,
             origin: ModuleOrigin::Builtin,
         });
-        self.builtin_modules.insert(name.to_string(), module.clone());
+        self.builtin_modules
+            .insert(name.to_string(), module.clone());
         self.scopes[0].insert(name.to_string(), Value::Module(module.clone()));
         if let Ok(mut cache) = self.module_cache.lock() {
-            cache.insert(
-                format!("builtin:{name}"),
-                ModuleLoadState::Ready(module),
-            );
+            cache.insert(format!("builtin:{name}"), ModuleLoadState::Ready(module));
         }
     }
 
@@ -186,10 +188,14 @@ impl Executor {
             match self.exec_stmt(stmt)? {
                 ExecResult::Normal => {}
                 ExecResult::Return(_) => {}
-                ExecResult::Continue => return Err(self.err("'continue' used outside loop", stmt.span())),
+                ExecResult::Continue => {
+                    return Err(self.err("'continue' used outside loop", stmt.span()));
+                }
                 ExecResult::Break => return Err(self.err("'break' used outside loop", stmt.span())),
                 ExecResult::Throw(v) => {
-                    return Err(self.err(&format!("Uncaught throw: {}", v.as_string()), stmt.span()))
+                    return Err(
+                        self.err(&format!("Uncaught throw: {}", v.as_string()), stmt.span())
+                    );
                 }
             }
         }
@@ -207,10 +213,16 @@ impl Executor {
                 _ => match self.exec_stmt(stmt)? {
                     ExecResult::Normal => {}
                     ExecResult::Return(_) => {}
-                    ExecResult::Continue => return Err(self.err("'continue' used outside loop", stmt.span())),
-                    ExecResult::Break => return Err(self.err("'break' used outside loop", stmt.span())),
+                    ExecResult::Continue => {
+                        return Err(self.err("'continue' used outside loop", stmt.span()));
+                    }
+                    ExecResult::Break => {
+                        return Err(self.err("'break' used outside loop", stmt.span()));
+                    }
                     ExecResult::Throw(v) => {
-                        return Err(self.err(&format!("Uncaught throw: {}", v.as_string()), stmt.span()))
+                        return Err(
+                            self.err(&format!("Uncaught throw: {}", v.as_string()), stmt.span())
+                        );
                     }
                 },
             }
@@ -245,7 +257,11 @@ impl Executor {
                 self.define(name, value);
                 Ok(ExecResult::Normal)
             }
-            Stmt::LetDestructure { pattern, expr, span } => {
+            Stmt::LetDestructure {
+                pattern,
+                expr,
+                span,
+            } => {
                 let value = self.eval_expr(expr)?;
                 self.bind_pattern(pattern, value, *span)?;
                 Ok(ExecResult::Normal)
@@ -257,20 +273,36 @@ impl Executor {
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::IndexAssign { target, index, expr, .. } => {
+            Stmt::IndexAssign {
+                target,
+                index,
+                expr,
+                ..
+            } => {
                 let idx = self.eval_expr(index)?;
                 let val = self.eval_expr(expr)?;
                 match target {
                     Expr::Var { name, .. } => {
-                        let obj = self.lookup(name).ok_or_else(|| self.err("Undefined variable", target.span()))?;
+                        let obj = self
+                            .lookup(name)
+                            .ok_or_else(|| self.err("Undefined variable", target.span()))?;
                         let updated = self.assign_index(obj, idx, val)?;
                         self.assign(name, updated);
                     }
-                    _ => return Err(self.err("Index assignment requires variable target", target.span())),
+                    _ => {
+                        return Err(
+                            self.err("Index assignment requires variable target", target.span())
+                        );
+                    }
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::If { cond, then_branch, else_branch, .. } => {
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 let c = self.eval_expr(cond)?;
                 let res = if c.is_truthy() {
                     self.exec_block(then_branch)?
@@ -279,7 +311,12 @@ impl Executor {
                 };
                 Ok(res)
             }
-            Stmt::For { pattern, iterable, body, span } => {
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+                span,
+            } => {
                 let it = self.eval_expr(iterable)?;
                 let items = self.iterate_value(it, *span)?;
                 for item in items {
@@ -308,14 +345,21 @@ impl Executor {
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::ParallelFor { pattern, iterable, body, .. } => {
+            Stmt::ParallelFor {
+                pattern,
+                iterable,
+                body,
+                ..
+            } => {
                 self.exec_parallel_for(pattern, iterable, body)?;
                 Ok(ExecResult::Normal)
             }
             Stmt::While { cond, body, .. } => {
                 loop {
                     let c = self.eval_expr(cond)?;
-                    if !c.is_truthy() { break; }
+                    if !c.is_truthy() {
+                        break;
+                    }
                     self.loop_depth += 1;
                     let body_res = self.exec_block(body);
                     self.loop_depth -= 1;
@@ -335,10 +379,19 @@ impl Executor {
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::Try { try_block, catch_name, catch_block, finally_block, .. } => {
-                let mut pending: Result<ExecResult, RuntimeError> = match self.exec_block(try_block) {
+            Stmt::Try {
+                try_block,
+                catch_name,
+                catch_block,
+                finally_block,
+                ..
+            } => {
+                let mut pending: Result<ExecResult, RuntimeError> = match self.exec_block(try_block)
+                {
                     Ok(ExecResult::Throw(v)) => {
-                        if let (Some(name), Some(block)) = (catch_name.as_ref(), catch_block.as_ref()) {
+                        if let (Some(name), Some(block)) =
+                            (catch_name.as_ref(), catch_block.as_ref())
+                        {
                             self.push_scope();
                             self.define(name, v);
                             let catch_res = self.exec_block(block);
@@ -349,7 +402,9 @@ impl Executor {
                     }
                     Ok(other) => Ok(other),
                     Err(e) => {
-                        if let (Some(name), Some(block)) = (catch_name.as_ref(), catch_block.as_ref()) {
+                        if let (Some(name), Some(block)) =
+                            (catch_name.as_ref(), catch_block.as_ref())
+                        {
                             let err_value = self.error_to_value(&e);
                             self.push_scope();
                             self.define(name, err_value);
@@ -406,7 +461,10 @@ impl Executor {
                 } else {
                     Value::Null
                 };
-                let ctx = self.generator_ctx.as_mut().expect("checked generator context");
+                let ctx = self
+                    .generator_ctx
+                    .as_mut()
+                    .expect("checked generator context");
                 if ctx.event_tx.send(GeneratorEvent::Yield(yielded)).is_err() {
                     return Ok(ExecResult::Return(Value::Null));
                 }
@@ -439,21 +497,36 @@ impl Executor {
                     Err(self.err("No active scope for defer", stmt.span()))
                 }
             }
-            Stmt::Use { module, alias, span } => {
+            Stmt::Use {
+                module,
+                alias,
+                span,
+            } => {
                 self.exec_use(module, alias.as_deref(), *span)?;
                 Ok(ExecResult::Normal)
             }
-            Stmt::ImportNamed { items, source, span } => {
+            Stmt::ImportNamed {
+                items,
+                source,
+                span,
+            } => {
                 self.exec_import_named(items, source, *span)?;
                 Ok(ExecResult::Normal)
             }
-            Stmt::ImportNamespace { alias, source, span } => {
+            Stmt::ImportNamespace {
+                alias,
+                source,
+                span,
+            } => {
                 self.exec_import_namespace(alias, source, *span)?;
                 Ok(ExecResult::Normal)
             }
             Stmt::TypeAlias { name, target, span } => {
                 if self.record_defs.contains_key(name) {
-                    return Err(self.err(&format!("Type name '{}' conflicts with existing record", name), *span));
+                    return Err(self.err(
+                        &format!("Type name '{}' conflicts with existing record", name),
+                        *span,
+                    ));
                 }
                 if self.type_aliases.contains_key(name) {
                     return Err(self.err(&format!("Type '{}' is already defined", name), *span));
@@ -463,7 +536,10 @@ impl Executor {
             }
             Stmt::RecordDef { name, fields, span } => {
                 if self.type_aliases.contains_key(name) {
-                    return Err(self.err(&format!("Record name '{}' conflicts with existing type alias", name), *span));
+                    return Err(self.err(
+                        &format!("Record name '{}' conflicts with existing type alias", name),
+                        *span,
+                    ));
                 }
                 let mut seen = std::collections::HashSet::new();
                 for field in fields {
@@ -471,10 +547,17 @@ impl Executor {
                         return Err(self.err("Record field name '__type' is reserved", *span));
                     }
                     if !seen.insert(field.name.clone()) {
-                        return Err(self.err(&format!("Duplicate record field '{}'", field.name), *span));
+                        return Err(
+                            self.err(&format!("Duplicate record field '{}'", field.name), *span)
+                        );
                     }
                 }
-                self.record_defs.insert(name.clone(), RecordDef { fields: fields.clone() });
+                self.record_defs.insert(
+                    name.clone(),
+                    RecordDef {
+                        fields: fields.clone(),
+                    },
+                );
                 Ok(ExecResult::Normal)
             }
             Stmt::Invoke { name, expr, span } => {
@@ -513,7 +596,12 @@ impl Executor {
         self.exit_scope(pending)
     }
 
-    fn exec_parallel_for(&mut self, pattern: &Pattern, iterable: &Expr, body: &[Stmt]) -> Result<(), RuntimeError> {
+    fn exec_parallel_for(
+        &mut self,
+        pattern: &Pattern,
+        iterable: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), RuntimeError> {
         let it = self.eval_expr(iterable)?;
         let items = self.iterate_value(it, iterable.span())?;
         if items.is_empty() {
@@ -628,8 +716,15 @@ impl Executor {
         self.last_span = expr.span();
         match expr {
             Expr::Literal { value, .. } => Ok(value.clone()),
-            Expr::Var { name, span } => self.lookup(name).ok_or_else(|| self.err("Undefined variable", *span)),
-            Expr::Binary { left, op, right, span } => {
+            Expr::Var { name, span } => self
+                .lookup(name)
+                .ok_or_else(|| self.err("Undefined variable", *span)),
+            Expr::Binary {
+                left,
+                op,
+                right,
+                span,
+            } => {
                 if op == "&&" {
                     let l = self.eval_expr(left)?;
                     if !l.is_truthy() {
@@ -695,19 +790,27 @@ impl Executor {
                 let obj = self.eval_expr(object)?;
                 self.namespace_access(obj, name, *span)
             }
-            Expr::Index { object, index, span } => {
+            Expr::Index {
+                object,
+                index,
+                span,
+            } => {
                 let obj = self.eval_expr(object)?;
                 let idx = self.eval_expr(index)?;
                 self.index_access(obj, idx, *span)
             }
             Expr::Array { items, .. } => {
                 let mut vals = Vec::new();
-                for e in items { vals.push(self.eval_expr(e)?); }
+                for e in items {
+                    vals.push(self.eval_expr(e)?);
+                }
                 Ok(Value::Array(Arc::new(Mutex::new(vals))))
             }
             Expr::Tuple { items, .. } => {
                 let mut vals = Vec::new();
-                for e in items { vals.push(self.eval_expr(e)?); }
+                for e in items {
+                    vals.push(self.eval_expr(e)?);
+                }
                 Ok(Value::tuple(vals))
             }
             Expr::Dict { items, .. } => {
@@ -752,9 +855,14 @@ impl Executor {
             Expr::Range { start, end, .. } => {
                 let s = self.eval_expr(start)?;
                 let e = self.eval_expr(end)?;
-                Ok(Value::Range(to_i64(s)? , to_i64(e)?))
+                Ok(Value::Range(to_i64(s)?, to_i64(e)?))
             }
-            Expr::IfExpr { cond, then_branch, else_branch, .. } => {
+            Expr::IfExpr {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 let c = self.eval_expr(cond)?;
                 if c.is_truthy() {
                     self.eval_block_expr(then_branch)
@@ -762,7 +870,11 @@ impl Executor {
                     self.eval_block_expr(else_branch)
                 }
             }
-            Expr::Match { subject, arms, span } => {
+            Expr::Match {
+                subject,
+                arms,
+                span,
+            } => {
                 let subject_value = self.eval_expr(subject)?;
                 for arm in arms {
                     let matched = match &arm.kind {
@@ -773,7 +885,8 @@ impl Executor {
                         }
                         MatchArmKind::Compare { op, rhs } => {
                             let rhs_value = self.eval_expr(rhs)?;
-                            let cmp = self.eval_binary(subject_value.clone(), op, rhs_value, *span)?;
+                            let cmp =
+                                self.eval_binary(subject_value.clone(), op, rhs_value, *span)?;
                             cmp.is_truthy()
                         }
                     };
@@ -781,11 +894,17 @@ impl Executor {
                         return self.eval_block_expr(&arm.body);
                     }
                 }
-                Err(self.err("No match arm matched and wildcard arm was not reached", *span))
+                Err(self.err(
+                    "No match arm matched and wildcard arm was not reached",
+                    *span,
+                ))
             }
-            Expr::ParallelFor { pattern, iterable, body, .. } => {
-                self.eval_parallel_for_expr(pattern, iterable, body)
-            }
+            Expr::ParallelFor {
+                pattern,
+                iterable,
+                body,
+                ..
+            } => self.eval_parallel_for_expr(pattern, iterable, body),
             Expr::TaskBlock { body, .. } => {
                 let body = body.clone();
                 let captured = self.flatten_scopes();
@@ -885,7 +1004,12 @@ impl Executor {
                     _ => Err(self.err("await expects task", *span)),
                 }
             }
-            Expr::Lambda { params, return_type, body, .. } => {
+            Expr::Lambda {
+                params,
+                return_type,
+                body,
+                ..
+            } => {
                 let captured = self.flatten_scopes();
                 let func = Function {
                     params: params.clone(),
@@ -925,7 +1049,12 @@ impl Executor {
         }
     }
 
-    fn bind_pattern(&mut self, pattern: &Pattern, value: Value, span: Span) -> Result<(), RuntimeError> {
+    fn bind_pattern(
+        &mut self,
+        pattern: &Pattern,
+        value: Value,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
         match pattern {
             Pattern::Ignore => Ok(()),
             Pattern::Name(name) => {
@@ -934,8 +1063,12 @@ impl Executor {
             }
             Pattern::Tuple(parts) => {
                 let values = match value {
-                    Value::Array(arr) => arr.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new()),
-                    Value::Tuple(tup) => tup.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new()),
+                    Value::Array(arr) => {
+                        arr.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())
+                    }
+                    Value::Tuple(tup) => {
+                        tup.lock().map(|v| v.clone()).unwrap_or_else(|_| Vec::new())
+                    }
                     other => vec![other],
                 };
                 for (idx, pat) in parts.iter().enumerate() {
@@ -954,19 +1087,17 @@ impl Executor {
         for stmt in stmts {
             match stmt {
                 Stmt::Expr { expr, .. } => last = self.eval_expr(expr)?,
-                _ => {
-                    match self.exec_stmt(stmt) {
-                        Ok(ExecResult::Normal) => {}
-                        Ok(other) => {
-                            pending = Ok(other);
-                            break;
-                        }
-                        Err(e) => {
-                            pending = Err(e);
-                            break;
-                        }
+                _ => match self.exec_stmt(stmt) {
+                    Ok(ExecResult::Normal) => {}
+                    Ok(other) => {
+                        pending = Ok(other);
+                        break;
                     }
-                }
+                    Err(e) => {
+                        pending = Err(e);
+                        break;
+                    }
+                },
             }
         }
         match self.exit_scope(pending)? {
@@ -974,11 +1105,19 @@ impl Executor {
             ExecResult::Return(v) => Ok(v),
             ExecResult::Continue => Ok(last),
             ExecResult::Break => Ok(last),
-            ExecResult::Throw(v) => Err(self.err(&format!("Uncaught throw: {}", v.as_string()), self.last_span)),
+            ExecResult::Throw(v) => Err(self.err(
+                &format!("Uncaught throw: {}", v.as_string()),
+                self.last_span,
+            )),
         }
     }
 
-    fn eval_parallel_for_expr(&mut self, pattern: &Pattern, iterable: &Expr, body: &[Stmt]) -> Result<Value, RuntimeError> {
+    fn eval_parallel_for_expr(
+        &mut self,
+        pattern: &Pattern,
+        iterable: &Expr,
+        body: &[Stmt],
+    ) -> Result<Value, RuntimeError> {
         let it = self.eval_expr(iterable)?;
         let items = self.iterate_value(it, iterable.span())?;
         if items.is_empty() {
@@ -1105,7 +1244,10 @@ impl Executor {
             return Err(err);
         }
 
-        let values = ordered.into_iter().map(|v| v.unwrap_or(Value::Null)).collect();
+        let values = ordered
+            .into_iter()
+            .map(|v| v.unwrap_or(Value::Null))
+            .collect();
         Ok(Value::array(values))
     }
 
@@ -1211,7 +1353,11 @@ impl Executor {
         Value::Generator(Arc::new(handle))
     }
 
-    pub fn next_generator(&self, generator: &Arc<GeneratorHandle>, span: Span) -> Result<Value, RuntimeError> {
+    pub fn next_generator(
+        &self,
+        generator: &Arc<GeneratorHandle>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         match self.generator_next_step(generator, span)? {
             GeneratorStep::Yield(v) => Ok(generator_step_dict(false, v, Value::Null)),
             GeneratorStep::Done(v) => Ok(generator_step_dict(true, Value::Null, v)),
@@ -1254,7 +1400,12 @@ impl Executor {
         }
     }
 
-    fn call(&mut self, callee: Value, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
+    fn call(
+        &mut self,
+        callee: Value,
+        args: Vec<RuntimeCallArg>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         match callee {
             Value::NativeFunction(f) => {
                 let positional = self.positional_only_args(args, span)?;
@@ -1308,7 +1459,11 @@ impl Executor {
         }
     }
 
-    pub fn call_value(&mut self, callee: Value, args: Vec<RuntimeCallArg>) -> Result<Value, RuntimeError> {
+    pub fn call_value(
+        &mut self,
+        callee: Value,
+        args: Vec<RuntimeCallArg>,
+    ) -> Result<Value, RuntimeError> {
         self.call(callee, args, Span { line: 0, col: 0 })
     }
 
@@ -1316,7 +1471,11 @@ impl Executor {
         self.iterate_value(value, span)
     }
 
-    fn positional_only_args(&self, args: Vec<RuntimeCallArg>, span: Span) -> Result<Vec<Value>, RuntimeError> {
+    fn positional_only_args(
+        &self,
+        args: Vec<RuntimeCallArg>,
+        span: Span,
+    ) -> Result<Vec<Value>, RuntimeError> {
         let mut out = Vec::new();
         for arg in args {
             match arg {
@@ -1325,14 +1484,22 @@ impl Executor {
                     out.extend(self.expand_spread_value(v, span)?);
                 }
                 RuntimeCallArg::Named { .. } => {
-                    return Err(self.err("Named arguments are only supported for user-defined functions in v1", span));
+                    return Err(self.err(
+                        "Named arguments are only supported for user-defined functions in v1",
+                        span,
+                    ));
                 }
             }
         }
         Ok(out)
     }
 
-    fn call_user_function(&mut self, func: &Function, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
+    fn call_user_function(
+        &mut self,
+        func: &Function,
+        args: Vec<RuntimeCallArg>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         let mut positional = Vec::new();
         let mut named: HashMap<String, Value> = HashMap::new();
         for arg in args {
@@ -1343,7 +1510,10 @@ impl Executor {
                 }
                 RuntimeCallArg::Named { name, value } => {
                     if named.insert(name.clone(), value).is_some() {
-                        return Err(self.err(&format!("Duplicate named argument '{name}' for {}", func.name), span));
+                        return Err(self.err(
+                            &format!("Duplicate named argument '{name}' for {}", func.name),
+                            span,
+                        ));
                     }
                 }
             }
@@ -1356,7 +1526,10 @@ impl Executor {
             if let Some(vidx) = variadic_param {
                 if vidx != func.params.len() - 1 {
                     return Err(self.err(
-                        &format!("Variadic parameter for {} must be the final parameter", func.name),
+                        &format!(
+                            "Variadic parameter for {} must be the final parameter",
+                            func.name
+                        ),
                         span,
                     ));
                 }
@@ -1385,7 +1558,10 @@ impl Executor {
                 if param.variadic {
                     if named.contains_key(&param.name) {
                         return Err(self.err(
-                            &format!("Variadic parameter '{}' for {} cannot be passed by name", param.name, func.name),
+                            &format!(
+                                "Variadic parameter '{}' for {} cannot be passed by name",
+                                param.name, func.name
+                            ),
                             span,
                         ));
                     }
@@ -1419,7 +1595,10 @@ impl Executor {
                 let value = if positional_index < positional.len() {
                     if named.contains_key(&param.name) {
                         return Err(self.err(
-                            &format!("Argument '{}' for {} was provided both positionally and by name", param.name, func.name),
+                            &format!(
+                                "Argument '{}' for {} was provided both positionally and by name",
+                                param.name, func.name
+                            ),
                             span,
                         ));
                     }
@@ -1432,7 +1611,10 @@ impl Executor {
                     self.eval_expr(default_expr)?
                 } else {
                     return Err(self.err(
-                        &format!("Missing required argument '{}' for {}", param.name, func.name),
+                        &format!(
+                            "Missing required argument '{}' for {}",
+                            param.name, func.name
+                        ),
                         span,
                     ));
                 };
@@ -1483,7 +1665,7 @@ impl Executor {
                 ExecResult::Continue => return Err(self.err("'continue' used outside loop", span)),
                 ExecResult::Break => return Err(self.err("'break' used outside loop", span)),
                 ExecResult::Throw(v) => {
-                    return Err(self.err(&format!("Uncaught throw: {}", v.as_string()), span))
+                    return Err(self.err(&format!("Uncaught throw: {}", v.as_string()), span));
                 }
             };
             if let Some(t) = &func.return_type {
@@ -1526,7 +1708,12 @@ impl Executor {
         }
     }
 
-    fn construct_record(&mut self, record_name: &str, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
+    fn construct_record(
+        &mut self,
+        record_name: &str,
+        args: Vec<RuntimeCallArg>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         let def = self
             .record_defs
             .get(record_name)
@@ -1543,7 +1730,10 @@ impl Executor {
                 }
                 RuntimeCallArg::Positional(_) | RuntimeCallArg::Spread(_) => {
                     return Err(self.err(
-                        &format!("Record constructor {}(...) expects named arguments only", record_name),
+                        &format!(
+                            "Record constructor {}(...) expects named arguments only",
+                            record_name
+                        ),
                         span,
                     ));
                 }
@@ -1562,7 +1752,10 @@ impl Executor {
                 self.eval_expr(default)?
             } else {
                 pending = Err(self.err(
-                    &format!("Record '{}' missing required field '{}'", record_name, field.name),
+                    &format!(
+                        "Record '{}' missing required field '{}'",
+                        record_name, field.name
+                    ),
                     span,
                 ));
                 break;
@@ -1609,7 +1802,12 @@ impl Executor {
         Ok(scope_out)
     }
 
-    fn construct_nominal(&mut self, type_name: &str, args: Vec<RuntimeCallArg>, span: Span) -> Result<Value, RuntimeError> {
+    fn construct_nominal(
+        &mut self,
+        type_name: &str,
+        args: Vec<RuntimeCallArg>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         let base = self
             .type_aliases
             .get(type_name)
@@ -1618,7 +1816,10 @@ impl Executor {
 
         if args.len() != 1 {
             return Err(self.err(
-                &format!("Type constructor {}(...) expects exactly 1 positional argument", type_name),
+                &format!(
+                    "Type constructor {}(...) expects exactly 1 positional argument",
+                    type_name
+                ),
                 span,
             ));
         }
@@ -1626,7 +1827,10 @@ impl Executor {
             RuntimeCallArg::Positional(v) => v,
             RuntimeCallArg::Spread(_) | RuntimeCallArg::Named { .. } => {
                 return Err(self.err(
-                    &format!("Type constructor {}(...) expects exactly 1 positional argument", type_name),
+                    &format!(
+                        "Type constructor {}(...) expects exactly 1 positional argument",
+                        type_name
+                    ),
                     span,
                 ));
             }
@@ -1654,7 +1858,12 @@ impl Executor {
         type_str(ty)
     }
 
-    fn type_matches_checked(&self, ty: &TypeExpr, value: &Value, span: Span) -> Result<bool, RuntimeError> {
+    fn type_matches_checked(
+        &self,
+        ty: &TypeExpr,
+        value: &Value,
+        span: Span,
+    ) -> Result<bool, RuntimeError> {
         type_matches_with_resolver(ty, value, &self.type_aliases, &self.record_defs)
             .map_err(|e| self.err(&e, span))
     }
@@ -1701,11 +1910,12 @@ impl Executor {
 
     fn namespace_access(&self, obj: Value, name: &str, span: Span) -> Result<Value, RuntimeError> {
         match obj {
-            Value::Module(module) => module
-                .exports
-                .get(name)
-                .cloned()
-                .ok_or_else(|| self.err(&format!("Module '{}' has no export '{}'", module.name, name), span)),
+            Value::Module(module) => module.exports.get(name).cloned().ok_or_else(|| {
+                self.err(
+                    &format!("Module '{}' has no export '{}'", module.name, name),
+                    span,
+                )
+            }),
             _ => Err(self.err("'::' requires module namespace", span)),
         }
     }
@@ -1722,94 +1932,125 @@ impl Executor {
                         return Ok(Value::Number(guard.len() as f64));
                     }
                 }
-                Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::Dict(map)) })
+                Ok(Value::Ufcs {
+                    name: name.to_string(),
+                    receiver: Box::new(Value::Dict(map)),
+                })
             }
-            Value::Array(arr) => {
-                match name {
-                    "add" => {
-                        let arr_ref = arr.clone();
-                        let func = move |args: Vec<Value>| {
-                            let mut list = arr_ref.lock().map_err(|_| "Array lock poisoned".to_string())?;
-                            if let Some(v) = args.get(0) {
-                                list.push(v.clone());
-                                Ok(Value::Null)
-                            } else {
-                                Err("add expects 1 argument".to_string())
-                            }
-                        };
-                        Ok(Value::NativeFunction(Arc::new(func)))
-                    }
-                    "count" => Ok(Value::Number(arr.lock().map(|v| v.len() as f64).unwrap_or(0.0))),
-                    _ => Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::Array(arr)) }),
+            Value::Array(arr) => match name {
+                "add" => {
+                    let arr_ref = arr.clone();
+                    let func = move |args: Vec<Value>| {
+                        let mut list = arr_ref
+                            .lock()
+                            .map_err(|_| "Array lock poisoned".to_string())?;
+                        if let Some(v) = args.get(0) {
+                            list.push(v.clone());
+                            Ok(Value::Null)
+                        } else {
+                            Err("add expects 1 argument".to_string())
+                        }
+                    };
+                    Ok(Value::NativeFunction(Arc::new(func)))
                 }
-            }
+                "count" => Ok(Value::Number(
+                    arr.lock().map(|v| v.len() as f64).unwrap_or(0.0),
+                )),
+                _ => Ok(Value::Ufcs {
+                    name: name.to_string(),
+                    receiver: Box::new(Value::Array(arr)),
+                }),
+            },
             Value::Tuple(tup) => match name {
-                "count" => Ok(Value::Number(tup.lock().map(|v| v.len() as f64).unwrap_or(0.0))),
-                _ => Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::Tuple(tup)) }),
+                "count" => Ok(Value::Number(
+                    tup.lock().map(|v| v.len() as f64).unwrap_or(0.0),
+                )),
+                _ => Ok(Value::Ufcs {
+                    name: name.to_string(),
+                    receiver: Box::new(Value::Tuple(tup)),
+                }),
             },
             Value::String(s) => {
                 if let Some(method) = strings::get_method(name, &s) {
                     return Ok(method);
                 }
-                Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::String(s)) })
+                Ok(Value::Ufcs {
+                    name: name.to_string(),
+                    receiver: Box::new(Value::String(s)),
+                })
             }
             Value::Task(task) => match name {
                 "join" => {
                     let task_ref = task.clone();
-                    Ok(Value::NativeFunctionExec(Arc::new(move |exec, _args, span| {
-                        exec.task_join(&task_ref, span)
-                    })))
+                    Ok(Value::NativeFunctionExec(Arc::new(
+                        move |exec, _args, span| exec.task_join(&task_ref, span),
+                    )))
                 }
                 "done" => {
                     let task_ref = task.clone();
-                    Ok(Value::NativeFunctionExec(Arc::new(move |exec, _args, span| {
-                        let done = task_ref
-                            .state
-                            .lock()
-                            .map_err(|_| exec.err("Task state lock poisoned", span))?
-                            .status
-                            != TaskStatus::Running;
-                        Ok(Value::Bool(done))
-                    })))
+                    Ok(Value::NativeFunctionExec(Arc::new(
+                        move |exec, _args, span| {
+                            let done = task_ref
+                                .state
+                                .lock()
+                                .map_err(|_| exec.err("Task state lock poisoned", span))?
+                                .status
+                                != TaskStatus::Running;
+                            Ok(Value::Bool(done))
+                        },
+                    )))
                 }
                 "cancel" => {
                     let task_ref = task.clone();
-                    Ok(Value::NativeFunctionExec(Arc::new(move |exec, _args, span| {
-                        let mut state = task_ref
-                            .state
-                            .lock()
-                            .map_err(|_| exec.err("Task state lock poisoned", span))?;
-                        if state.status == TaskStatus::Running {
-                            state.status = TaskStatus::Cancelled;
-                            state.error = Some(exec.err("Task cancelled", span));
-                            return Ok(Value::Bool(true));
-                        }
-                        Ok(Value::Bool(false))
-                    })))
+                    Ok(Value::NativeFunctionExec(Arc::new(
+                        move |exec, _args, span| {
+                            let mut state = task_ref
+                                .state
+                                .lock()
+                                .map_err(|_| exec.err("Task state lock poisoned", span))?;
+                            if state.status == TaskStatus::Running {
+                                state.status = TaskStatus::Cancelled;
+                                state.error = Some(exec.err("Task cancelled", span));
+                                return Ok(Value::Bool(true));
+                            }
+                            Ok(Value::Bool(false))
+                        },
+                    )))
                 }
                 "error" => {
                     let task_ref = task.clone();
-                    Ok(Value::NativeFunctionExec(Arc::new(move |exec, _args, span| {
-                        let state = task_ref
-                            .state
-                            .lock()
-                            .map_err(|_| exec.err("Task state lock poisoned", span))?;
-                        if let Some(err) = &state.error {
-                            Ok(Value::String(err.message.clone()))
-                        } else {
-                            Ok(Value::Null)
-                        }
-                    })))
+                    Ok(Value::NativeFunctionExec(Arc::new(
+                        move |exec, _args, span| {
+                            let state = task_ref
+                                .state
+                                .lock()
+                                .map_err(|_| exec.err("Task state lock poisoned", span))?;
+                            if let Some(err) = &state.error {
+                                Ok(Value::String(err.message.clone()))
+                            } else {
+                                Ok(Value::Null)
+                            }
+                        },
+                    )))
                 }
-                _ => Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::Task(task)) }),
+                _ => Ok(Value::Ufcs {
+                    name: name.to_string(),
+                    receiver: Box::new(Value::Task(task)),
+                }),
             },
             Value::Number(n) => {
                 if let Some(method) = numbers::get_method(name, n) {
                     return Ok(method);
                 }
-                Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(Value::Number(n)) })
+                Ok(Value::Ufcs {
+                    name: name.to_string(),
+                    receiver: Box::new(Value::Number(n)),
+                })
             }
-            _ => Ok(Value::Ufcs { name: name.to_string(), receiver: Box::new(obj) }),
+            _ => Ok(Value::Ufcs {
+                name: name.to_string(),
+                receiver: Box::new(obj),
+            }),
         }
     }
 
@@ -1817,15 +2058,24 @@ impl Executor {
         match obj {
             Value::Array(arr) => {
                 let i = to_i64(idx)? as usize;
-                arr.lock().ok().and_then(|v| v.get(i).cloned()).ok_or_else(|| self.err("Index out of range", span))
+                arr.lock()
+                    .ok()
+                    .and_then(|v| v.get(i).cloned())
+                    .ok_or_else(|| self.err("Index out of range", span))
             }
             Value::Tuple(tup) => {
                 let i = to_i64(idx)? as usize;
-                tup.lock().ok().and_then(|v| v.get(i).cloned()).ok_or_else(|| self.err("Index out of range", span))
+                tup.lock()
+                    .ok()
+                    .and_then(|v| v.get(i).cloned())
+                    .ok_or_else(|| self.err("Index out of range", span))
             }
             Value::Dict(map) => {
                 let key = idx.as_string();
-                map.lock().ok().and_then(|v| v.get(&key).cloned()).ok_or_else(|| self.err("Missing key", span))
+                map.lock()
+                    .ok()
+                    .and_then(|v| v.get(&key).cloned())
+                    .ok_or_else(|| self.err("Missing key", span))
             }
             _ => Err(self.err("Indexing not supported", span)),
         }
@@ -1836,16 +2086,25 @@ impl Executor {
             Value::Array(arr) => {
                 let i = to_i64(idx)? as usize;
                 {
-                    let mut list = arr.lock().map_err(|_| self.err("Array lock poisoned", Span { line: 0, col: 0 }))?;
-                    if i >= list.len() { return Err(self.err("Index out of range", Span { line: 0, col: 0 })); }
+                    let mut list = arr
+                        .lock()
+                        .map_err(|_| self.err("Array lock poisoned", Span { line: 0, col: 0 }))?;
+                    if i >= list.len() {
+                        return Err(self.err("Index out of range", Span { line: 0, col: 0 }));
+                    }
                     list[i] = val;
                 }
                 Ok(Value::Array(arr))
             }
-            Value::Tuple(_) => Err(self.err("Cannot assign to tuple index (tuples are immutable)", Span { line: 0, col: 0 })),
+            Value::Tuple(_) => Err(self.err(
+                "Cannot assign to tuple index (tuples are immutable)",
+                Span { line: 0, col: 0 },
+            )),
             Value::Dict(map) => {
                 let key = idx.as_string();
-                map.lock().map_err(|_| self.err("Dict lock poisoned", Span { line: 0, col: 0 }))?.insert(key, val);
+                map.lock()
+                    .map_err(|_| self.err("Dict lock poisoned", Span { line: 0, col: 0 }))?
+                    .insert(key, val);
                 Ok(Value::Dict(map))
             }
             _ => Err(self.err("Index assignment not supported", Span { line: 0, col: 0 })),
@@ -1859,9 +2118,13 @@ impl Executor {
             Value::Range(a, b) => {
                 let mut out = Vec::new();
                 if a <= b {
-                    for i in a..=b { out.push(Value::Number(i as f64)); }
+                    for i in a..=b {
+                        out.push(Value::Number(i as f64));
+                    }
                 } else {
-                    for i in (b..=a).rev() { out.push(Value::Number(i as f64)); }
+                    for i in (b..=a).rev() {
+                        out.push(Value::Number(i as f64));
+                    }
                 }
                 Ok(out)
             }
@@ -1888,7 +2151,12 @@ impl Executor {
         }
     }
 
-    fn exec_use(&mut self, module: &str, alias: Option<&str>, span: Span) -> Result<(), RuntimeError> {
+    fn exec_use(
+        &mut self,
+        module: &str,
+        alias: Option<&str>,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
         let module_value = self.load_builtin_module(module, span)?;
         if let Some(alias_name) = alias {
             self.ensure_name_free(alias_name, span)?;
@@ -1904,7 +2172,12 @@ impl Executor {
         if let Some(existing) = self.lookup(module) {
             match existing {
                 Value::Module(existing_module) if Arc::ptr_eq(&existing_module, &module_value) => {}
-                _ => return Err(self.err(&format!("Name conflict for import/use binding '{}'", module), span)),
+                _ => {
+                    return Err(self.err(
+                        &format!("Name conflict for import/use binding '{}'", module),
+                        span,
+                    ));
+                }
             }
         }
 
@@ -1927,17 +2200,23 @@ impl Executor {
         for item in items {
             let bind_name = item.alias.as_deref().unwrap_or(&item.name);
             self.ensure_name_free(bind_name, span)?;
-            let value = module
-                .exports
-                .get(&item.name)
-                .cloned()
-                .ok_or_else(|| self.err(&format!("Module '{}' has no export '{}'", module.name, item.name), span))?;
+            let value = module.exports.get(&item.name).cloned().ok_or_else(|| {
+                self.err(
+                    &format!("Module '{}' has no export '{}'", module.name, item.name),
+                    span,
+                )
+            })?;
             self.define(bind_name, value);
         }
         Ok(())
     }
 
-    fn exec_import_namespace(&mut self, alias: &str, source: &ImportSource, span: Span) -> Result<(), RuntimeError> {
+    fn exec_import_namespace(
+        &mut self,
+        alias: &str,
+        source: &ImportSource,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
         self.ensure_name_free(alias, span)?;
         let module = self.load_module_from_source(source, span)?;
         self.define(alias, Value::Module(module));
@@ -1946,26 +2225,41 @@ impl Executor {
 
     fn ensure_name_free(&self, name: &str, span: Span) -> Result<(), RuntimeError> {
         if self.lookup(name).is_some() {
-            return Err(self.err(&format!("Name conflict for import/use binding '{}'", name), span));
+            return Err(self.err(
+                &format!("Name conflict for import/use binding '{}'", name),
+                span,
+            ));
         }
         Ok(())
     }
 
-    fn load_module_from_source(&mut self, source: &ImportSource, span: Span) -> Result<Arc<ModuleValue>, RuntimeError> {
+    fn load_module_from_source(
+        &mut self,
+        source: &ImportSource,
+        span: Span,
+    ) -> Result<Arc<ModuleValue>, RuntimeError> {
         match source {
             ImportSource::Builtin(name) => self.load_builtin_module(name, span),
             ImportSource::Path(path) => self.load_script_module(path, span),
         }
     }
 
-    fn load_builtin_module(&self, name: &str, span: Span) -> Result<Arc<ModuleValue>, RuntimeError> {
+    fn load_builtin_module(
+        &self,
+        name: &str,
+        span: Span,
+    ) -> Result<Arc<ModuleValue>, RuntimeError> {
         self.builtin_modules
             .get(name)
             .cloned()
             .ok_or_else(|| self.err(&format!("Unknown builtin module '{name}'"), span))
     }
 
-    fn load_script_module(&mut self, raw_path: &str, span: Span) -> Result<Arc<ModuleValue>, RuntimeError> {
+    fn load_script_module(
+        &mut self,
+        raw_path: &str,
+        span: Span,
+    ) -> Result<Arc<ModuleValue>, RuntimeError> {
         let full = self.resolve_script_path(raw_path, span)?;
         let key = format!("script:{}", full.display());
 
@@ -2006,16 +2300,18 @@ impl Executor {
         self.loading_stack.push(key.clone());
 
         let result = (|| -> Result<Arc<ModuleValue>, RuntimeError> {
-            let source = fs::read_to_string(&full)
-                .map_err(|e| self.err(&format!("Failed to read module {}: {e}", full.display()), span))?;
+            let source = fs::read_to_string(&full).map_err(|e| {
+                self.err(
+                    &format!("Failed to read module {}: {e}", full.display()),
+                    span,
+                )
+            })?;
             let mut scanner = Scanner::new(&source);
             let tokens = scanner
                 .scan_tokens()
                 .map_err(|e| self.err(&format!("{}: {e}", full.display()), span))?;
             let mut parser = Parser::new(tokens, &source, full.to_string_lossy().to_string());
-            let program = parser
-                .parse_program()
-                .map_err(|e| self.err(&e, span))?;
+            let program = parser.parse_program().map_err(|e| self.err(&e, span))?;
 
             let mut child = Executor {
                 filename: full.to_string_lossy().to_string(),
@@ -2070,7 +2366,8 @@ impl Executor {
             path.to_path_buf()
         } else {
             let base = if self.filename == "<repl>" || self.filename == "<stdin>" {
-                std::env::current_dir().map_err(|e| self.err(&format!("Failed to resolve cwd: {e}"), span))?
+                std::env::current_dir()
+                    .map_err(|e| self.err(&format!("Failed to resolve cwd: {e}"), span))?
             } else {
                 Path::new(&self.filename)
                     .parent()
@@ -2081,7 +2378,10 @@ impl Executor {
         };
         std::fs::canonicalize(&resolved).map_err(|e| {
             self.err(
-                &format!("Failed to resolve import path '{}': {e}", resolved.display()),
+                &format!(
+                    "Failed to resolve import path '{}': {e}",
+                    resolved.display()
+                ),
                 span,
             )
         })
@@ -2130,7 +2430,9 @@ impl Executor {
 
     fn lookup(&self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(name) { return Some(v.clone()); }
+            if let Some(v) = scope.get(name) {
+                return Some(v.clone());
+            }
         }
         None
     }
@@ -2145,7 +2447,10 @@ impl Executor {
         self.deferred_scopes.push(Vec::new());
     }
 
-    fn exit_scope(&mut self, mut pending: Result<ExecResult, RuntimeError>) -> Result<ExecResult, RuntimeError> {
+    fn exit_scope(
+        &mut self,
+        mut pending: Result<ExecResult, RuntimeError>,
+    ) -> Result<ExecResult, RuntimeError> {
         let deferred_blocks = self.deferred_scopes.pop().unwrap_or_default();
         for block in deferred_blocks.into_iter().rev() {
             match self.exec_block(&block) {
@@ -2171,7 +2476,11 @@ impl Executor {
     }
 
     fn push_frame(&mut self, name: String, span: Span) {
-        self.stack.push(Frame { name, line: span.line, col: span.col });
+        self.stack.push(Frame {
+            name,
+            line: span.line,
+            col: span.col,
+        });
     }
 
     fn pop_frame(&mut self) {
@@ -2189,7 +2498,14 @@ impl Executor {
     fn err(&self, message: &str, span: Span) -> RuntimeError {
         let span = if span.line == 0 { self.last_span } else { span };
         let snippet = self.render_snippet(span);
-        RuntimeError::new(message.to_string(), self.filename.clone(), span.line, span.col, snippet, self.stack.clone())
+        RuntimeError::new(
+            message.to_string(),
+            self.filename.clone(),
+            span.line,
+            span.col,
+            snippet,
+            self.stack.clone(),
+        )
     }
 
     pub fn make_error(&self, message: &str, span: Span) -> RuntimeError {
@@ -2198,7 +2514,9 @@ impl Executor {
 
     fn render_snippet(&self, span: Span) -> Option<String> {
         let lines: Vec<&str> = self.source.lines().collect();
-        if span.line == 0 || span.line > lines.len() { return None; }
+        if span.line == 0 || span.line > lines.len() {
+            return None;
+        }
         let line = lines[span.line - 1];
         let col = if span.col == 0 { 1 } else { span.col };
         let mut caret = String::new();
@@ -2236,7 +2554,12 @@ impl Executor {
         self.err(&msg, span)
     }
 
-    fn unknown_method_or_function_error(&self, name: &str, receiver: &Value, span: Span) -> RuntimeError {
+    fn unknown_method_or_function_error(
+        &self,
+        name: &str,
+        receiver: &Value,
+        span: Span,
+    ) -> RuntimeError {
         let ty = value_type_str(receiver);
         let mut candidates = self.known_method_names_for(receiver);
         candidates.extend(self.known_global_function_names());
@@ -2255,7 +2578,9 @@ impl Executor {
         let mut names: Vec<String> = self.scopes[0]
             .iter()
             .filter_map(|(k, v)| match v {
-                Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => Some(k.clone()),
+                Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => {
+                    Some(k.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -2270,7 +2595,10 @@ impl Executor {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
-            Value::Array(_) => vec!["add", "count"].into_iter().map(str::to_string).collect(),
+            Value::Array(_) => vec!["add", "count"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
             Value::Tuple(_) => vec!["count"].into_iter().map(str::to_string).collect(),
             Value::Dict(_) => vec!["count"].into_iter().map(str::to_string).collect(),
             Value::String(_) => vec![
@@ -2297,8 +2625,8 @@ impl Executor {
             .map(str::to_string)
             .collect(),
             Value::Number(_) => vec![
-                "abs", "floor", "ceil", "round", "min", "max", "clamp", "pow", "sqrt", "toInt", "toFloat",
-                "isInt", "toString",
+                "abs", "floor", "ceil", "round", "min", "max", "clamp", "pow", "sqrt", "toInt",
+                "toFloat", "isInt", "toString",
             ]
             .into_iter()
             .map(str::to_string)
@@ -2324,20 +2652,36 @@ enum GeneratorStep {
 fn to_f64(v: Value) -> Result<f64, RuntimeError> {
     match v {
         Value::Number(n) => Ok(n),
-        _ => Err(RuntimeError::new("Expected number".to_string(), "<unknown>".to_string(), 0, 0, None, Vec::new())),
+        _ => Err(RuntimeError::new(
+            "Expected number".to_string(),
+            "<unknown>".to_string(),
+            0,
+            0,
+            None,
+            Vec::new(),
+        )),
     }
 }
 
 fn to_i64(v: Value) -> Result<i64, RuntimeError> {
     match v {
         Value::Number(n) => Ok(n as i64),
-        _ => Err(RuntimeError::new("Expected number".to_string(), "<unknown>".to_string(), 0, 0, None, Vec::new())),
+        _ => Err(RuntimeError::new(
+            "Expected number".to_string(),
+            "<unknown>".to_string(),
+            0,
+            0,
+            None,
+            Vec::new(),
+        )),
     }
 }
 
 fn now_hms() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = now.as_secs() % 86400;
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -2361,7 +2705,9 @@ fn parallelism_cap() -> usize {
             }
         }
     }
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
 }
 
 fn type_str(ty: &crate::parser::ast::TypeExpr) -> String {
@@ -2401,7 +2747,10 @@ fn type_matches_with_resolver(
             "range" => Ok(matches!(value, Value::Range(_, _))),
             "task" => Ok(matches!(value, Value::Task(_))),
             "generator" => Ok(matches!(value, Value::Generator(_))),
-            "fn" => Ok(matches!(value, Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_))),
+            "fn" => Ok(matches!(
+                value,
+                Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_)
+            )),
             other => {
                 if record_defs.contains_key(other) {
                     return Ok(record_type_name(value).as_deref() == Some(other));
@@ -2444,7 +2793,10 @@ fn type_matches_with_resolver(
         },
         T::Map(k, v) => match value {
             Value::Dict(map) => {
-                let items = map.lock().map(|m| m.clone()).unwrap_or_else(|_| HashMap::new());
+                let items = map
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_else(|_| HashMap::new());
                 for (key, val) in items {
                     let key_val = Value::String(key);
                     if !type_matches_with_resolver(k, &key_val, type_aliases, record_defs)? {
@@ -2459,10 +2811,15 @@ fn type_matches_with_resolver(
             _ => Ok(false),
         },
         T::Range(inner) => match value {
-            Value::Range(_, _) => type_matches_with_resolver(inner, &Value::Number(0.0), type_aliases, record_defs),
+            Value::Range(_, _) => {
+                type_matches_with_resolver(inner, &Value::Number(0.0), type_aliases, record_defs)
+            }
             _ => Ok(false),
         },
-        T::Fn(_) => Ok(matches!(value, Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_))),
+        T::Fn(_) => Ok(matches!(
+            value,
+            Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_)
+        )),
         T::Union(items) => {
             for ty in items {
                 if type_matches_with_resolver(ty, value, type_aliases, record_defs)? {
@@ -2552,10 +2909,11 @@ fn stmt_contains_yield(stmt: &Stmt) -> bool {
         | Stmt::Throw { value: expr, .. }
         | Stmt::Invoke { expr, .. } => expr_contains_yield(expr),
         Stmt::IndexAssign {
-            target, index, expr, ..
-        } => {
-            expr_contains_yield(target) || expr_contains_yield(index) || expr_contains_yield(expr)
-        }
+            target,
+            index,
+            expr,
+            ..
+        } => expr_contains_yield(target) || expr_contains_yield(index) || expr_contains_yield(expr),
         Stmt::Return { value: None, .. }
         | Stmt::Continue { .. }
         | Stmt::Break { .. }
@@ -2579,8 +2937,12 @@ fn expr_contains_yield(expr: &Expr) -> bool {
                     CallArg::Named { value, .. } => expr_contains_yield(value),
                 })
         }
-        Expr::Member { object, .. } | Expr::NamespaceMember { object, .. } => expr_contains_yield(object),
-        Expr::Index { object, index, .. } => expr_contains_yield(object) || expr_contains_yield(index),
+        Expr::Member { object, .. } | Expr::NamespaceMember { object, .. } => {
+            expr_contains_yield(object)
+        }
+        Expr::Index { object, index, .. } => {
+            expr_contains_yield(object) || expr_contains_yield(index)
+        }
         Expr::Array { items, .. } | Expr::Tuple { items, .. } => {
             items.iter().any(expr_contains_yield)
         }
@@ -2606,11 +2968,17 @@ fn expr_contains_yield(expr: &Expr) -> bool {
             then_branch,
             else_branch,
             ..
-        } => expr_contains_yield(cond) || block_contains_yield(then_branch) || block_contains_yield(else_branch),
+        } => {
+            expr_contains_yield(cond)
+                || block_contains_yield(then_branch)
+                || block_contains_yield(else_branch)
+        }
         Expr::Match { subject, arms, .. } => {
             expr_contains_yield(subject)
                 || arms.iter().any(|arm| match &arm.kind {
-                    MatchArmKind::Value(e) => expr_contains_yield(e) || block_contains_yield(&arm.body),
+                    MatchArmKind::Value(e) => {
+                        expr_contains_yield(e) || block_contains_yield(&arm.body)
+                    }
                     MatchArmKind::Compare { rhs, .. } => {
                         expr_contains_yield(rhs) || block_contains_yield(&arm.body)
                     }
@@ -2635,7 +3003,9 @@ fn expr_contains_yield(expr: &Expr) -> bool {
             InterpPart::Expr(e) => expr_contains_yield(e),
         }),
         Expr::Sh { command, .. } => expr_contains_yield(command),
-        Expr::Ssh { host, command, .. } => expr_contains_yield(host) || expr_contains_yield(command),
+        Expr::Ssh { host, command, .. } => {
+            expr_contains_yield(host) || expr_contains_yield(command)
+        }
         Expr::Literal { .. } | Expr::Var { .. } => false,
     }
 }
@@ -2654,7 +3024,11 @@ fn suggest_names(target: &str, candidates: &[String]) -> Vec<String> {
                 2
             } else {
                 let d = levenshtein(&target_l, &c_l);
-                if d <= 2 { 3 + d } else { return None; }
+                if d <= 2 {
+                    3 + d
+                } else {
+                    return None;
+                }
             };
             Some((score, c.clone()))
         })

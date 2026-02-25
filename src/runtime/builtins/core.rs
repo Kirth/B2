@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::runtime::executor::{Executor, RuntimeCallArg};
 use crate::runtime::errors::RuntimeError;
+use crate::runtime::executor::{Executor, RuntimeCallArg};
 use crate::runtime::value::Value;
 
 pub fn register(exec: &mut Executor) {
@@ -30,8 +30,8 @@ pub fn register(exec: &mut Executor) {
             Some(v) => v.as_string(),
             None => return Err("read_file expects path".to_string()),
         };
-        let contents = fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read {path}: {e}"))?;
+        let contents =
+            fs::read_to_string(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
         Ok(Value::String(contents))
     });
 
@@ -111,7 +111,8 @@ pub fn register(exec: &mut Executor) {
         let items = iter_values(iterable, exec, span)?;
         let mut out = Vec::new();
         for item in items {
-            let result = exec.call_value(func.clone(), vec![RuntimeCallArg::Positional(item.clone())])?;
+            let result =
+                exec.call_value(func.clone(), vec![RuntimeCallArg::Positional(item.clone())])?;
             if result.is_truthy() {
                 out.push(item);
             }
@@ -121,7 +122,10 @@ pub fn register(exec: &mut Executor) {
 
     exec.register_native_exec("reduce", |exec, args, span| {
         if args.len() < 3 {
-            return Err(exec.make_error("reduce expects iterable, fn, initial (or iterable, initial, fn)", span));
+            return Err(exec.make_error(
+                "reduce expects iterable, fn, initial (or iterable, initial, fn)",
+                span,
+            ));
         }
         let iterable = args[0].clone();
         let (func, mut acc) = match (&args[1], &args[2]) {
@@ -137,7 +141,10 @@ pub fn register(exec: &mut Executor) {
         for item in items {
             let result = exec.call_value(
                 func.clone(),
-                vec![RuntimeCallArg::Positional(acc), RuntimeCallArg::Positional(item)],
+                vec![
+                    RuntimeCallArg::Positional(acc),
+                    RuntimeCallArg::Positional(item),
+                ],
             )?;
             acc = result;
         }
@@ -271,7 +278,9 @@ pub fn register(exec: &mut Executor) {
         if descending {
             decorated.reverse();
         }
-        Ok(Value::array(decorated.into_iter().map(|(item, _)| item).collect()))
+        Ok(Value::array(
+            decorated.into_iter().map(|(item, _)| item).collect(),
+        ))
     });
 
     exec.register_native_exec("groupBy", |exec, args, span| {
@@ -342,7 +351,9 @@ pub fn register(exec: &mut Executor) {
 
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = now.as_secs() % 86400;
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -350,7 +361,11 @@ fn chrono_now() -> String {
     format!("{:02}:{:02}:{:02}", h, m, s)
 }
 
-fn expect_two(mut args: Vec<Value>, exec: &Executor, span: crate::parser::ast::Span) -> Result<(Value, Value), RuntimeError> {
+fn expect_two(
+    mut args: Vec<Value>,
+    exec: &Executor,
+    span: crate::parser::ast::Span,
+) -> Result<(Value, Value), RuntimeError> {
     if args.len() < 2 {
         return Err(exec.make_error("Expected 2 arguments", span));
     }
@@ -359,7 +374,12 @@ fn expect_two(mut args: Vec<Value>, exec: &Executor, span: crate::parser::ast::S
     Ok((first, second))
 }
 
-fn expect_callable(value: &Value, exec: &Executor, span: crate::parser::ast::Span, name: &str) -> Result<(), RuntimeError> {
+fn expect_callable(
+    value: &Value,
+    exec: &Executor,
+    span: crate::parser::ast::Span,
+    name: &str,
+) -> Result<(), RuntimeError> {
     match value {
         Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => Ok(()),
         _ => Err(exec.make_error(&format!("{name} expects a callable argument"), span)),
@@ -370,14 +390,24 @@ fn call_unary(exec: &mut Executor, func: &Value, arg: Value) -> Result<Value, Ru
     exec.call_value(func.clone(), vec![RuntimeCallArg::Positional(arg)])
 }
 
-fn call_binary(exec: &mut Executor, func: &Value, a: Value, b: Value) -> Result<Value, RuntimeError> {
+fn call_binary(
+    exec: &mut Executor,
+    func: &Value,
+    a: Value,
+    b: Value,
+) -> Result<Value, RuntimeError> {
     exec.call_value(
         func.clone(),
         vec![RuntimeCallArg::Positional(a), RuntimeCallArg::Positional(b)],
     )
 }
 
-fn expect_number(value: &Value, exec: &Executor, span: crate::parser::ast::Span, where_: &str) -> Result<f64, RuntimeError> {
+fn expect_number(
+    value: &Value,
+    exec: &Executor,
+    span: crate::parser::ast::Span,
+    where_: &str,
+) -> Result<f64, RuntimeError> {
     match value {
         Value::Number(n) => Ok(*n),
         _ => Err(exec.make_error(&format!("{where_} must return number"), span)),
@@ -393,7 +423,12 @@ fn compare_values(a: &Value, b: &Value) -> Ordering {
     }
 }
 
-fn as_hash_key(value: &Value, exec: &Executor, span: crate::parser::ast::Span, where_: &str) -> Result<String, RuntimeError> {
+fn as_hash_key(
+    value: &Value,
+    exec: &Executor,
+    span: crate::parser::ast::Span,
+    where_: &str,
+) -> Result<String, RuntimeError> {
     match value {
         Value::Null => Ok("null:null".to_string()),
         Value::Bool(b) => Ok(format!("bool:{b}")),
@@ -426,7 +461,11 @@ where
     Ok(())
 }
 
-fn iter_values(value: Value, exec: &Executor, span: crate::parser::ast::Span) -> Result<Vec<Value>, RuntimeError> {
+fn iter_values(
+    value: Value,
+    exec: &Executor,
+    span: crate::parser::ast::Span,
+) -> Result<Vec<Value>, RuntimeError> {
     exec.collect_iterable(value, span)
 }
 
@@ -445,7 +484,9 @@ fn value_type_label(value: &Value) -> String {
         Value::Task(_) => "task".to_string(),
         Value::Generator(_) => "generator".to_string(),
         Value::Module(_) => "module".to_string(),
-        Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => "fn".to_string(),
+        Value::Function(_) | Value::NativeFunction(_) | Value::NativeFunctionExec(_) => {
+            "fn".to_string()
+        }
         Value::Ufcs { .. } => "ufcs".to_string(),
     }
 }

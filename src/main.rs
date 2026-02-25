@@ -1,14 +1,7 @@
-mod cli;
-mod lexer;
-mod parser;
-mod repl;
-mod runtime;
-mod utils;
-
-use cli::args::{CliArgs, CliCommand};
-use cli::io::load_source;
-use runtime::builtins::register_builtins;
-use runtime::executor::Executor;
+use v2r::cli::args::{CliArgs, CliCommand};
+use v2r::cli::io::load_source;
+use v2r::repl;
+use v2r::run_script;
 
 fn main() {
     let args = CliArgs::parse();
@@ -28,28 +21,7 @@ fn main() {
         }
     };
 
-    let mut scanner = lexer::scanner::Scanner::new(&source);
-    let tokens = match scanner.scan_tokens() {
-        Ok(t) => t,
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
-    };
-
-    let mut parser = parser::parser::Parser::new(tokens, &source, filename.clone());
-    let program = match parser.parse_program() {
-        Ok(p) => p,
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
-    };
-
-    let mut executor = Executor::new(filename, source);
-    register_builtins(&mut executor);
-
-    if let Err(err) = executor.execute(&program) {
+    if let Err(err) = run_script(&source, &filename) {
         eprintln!("{err}");
         std::process::exit(1);
     }
